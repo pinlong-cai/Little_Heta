@@ -303,13 +303,17 @@ def _system_prompt() -> str:
 Your job is to absorb parsed source documents into the Markdown wiki working copy.
 You must use tools to inspect and edit files. Do not claim completion until the
 working copy contains the final wiki changes.
+In normal ingest, you receive one source document at a time. Treat that document
+as the current unit of truth and preserve its concrete details in the wiki.
 
 Required workflow:
 1. read_page("index.md") to understand the current wiki.
 2. Identify up to 5 related pages from index.md for each source document.
 3. read_page each related page before deciding whether it is genuinely related.
 4. For each source document, either create one complete new page or edit one
-   existing page that already covers the same topic.
+   existing page that already covers the same topic. When editing an existing
+   page, add or extend a source-specific section unless the current source is
+   genuinely duplicate.
 5. Update index.md with one entry per created or substantially updated page.
    The entry must use exactly this format:
    - [id] [[Title]] (pages/file-name.md) — one-line summary
@@ -330,7 +334,9 @@ updated: YYYY-MM-DD
 One paragraph.
 
 ## Content
-Full self-contained content.
+Full self-contained content. Preserve the source document's definitions,
+examples, procedures, named entities, important lists, formulas, constraints,
+and concrete facts. Do not replace the source with a high-level summary.
 
 ## Related Pages
 - [[Related Title]]
@@ -343,6 +349,11 @@ If there are no related pages, write "- None yet".
 Rules:
 - Paths are limited to index.md, log.md, and pages/*.md.
 - One source document becomes one complete wiki page unless it clearly belongs in an existing page.
+- Every source document must be represented in page content and in the Source list.
+- Merge overlapping sources only when they describe the same thing; even then,
+  keep new details from the current source.
+- Do not discard details just because they seem minor or because the page already
+  has a summary.
 - Do not invent or maintain wiki ids, chunk ids, or numeric page prefixes.
 - Keep [[Wiki Links]] semantic, e.g. [[HetaGen]], never [[1-HetaGen]].
 - Always read a page before editing it.

@@ -57,22 +57,27 @@ def insert_paths(
             parsed_documents.append(parse_document(source.source_path, source.archived_path, config))
 
         working_wiki = create_working_copy(task_id, base_dir)
-        agent_result = run_merge_agent(
-            task_id=task_id,
-            documents=parsed_documents,
-            root_dir=working_wiki,
-            config=config,
-        )
-        if not (agent_result["added"] or agent_result["updated"] or agent_result["deleted"]):
-            raise RuntimeError("Agent completed without changing the wiki.")
-        normalize_result = normalize_wiki_pages(working_wiki)
-        repair_broken_wiki_links(working_wiki)
-        validate_wiki(working_wiki)
+        added = []
+        updated = []
+        deleted = []
+        for index, document in enumerate(parsed_documents, start=1):
+            agent_result = run_merge_agent(
+                task_id=f"{task_id}_{index}",
+                documents=[document],
+                root_dir=working_wiki,
+                config=config,
+            )
+            if not (agent_result["added"] or agent_result["updated"] or agent_result["deleted"]):
+                raise RuntimeError(f"Agent completed without changing the wiki for: {document.source_name}")
+            normalize_result = normalize_wiki_pages(working_wiki)
+            repair_broken_wiki_links(working_wiki)
+            validate_wiki(working_wiki)
+            added.extend(apply_path_map(agent_result["added"], normalize_result.path_map))
+            updated.extend(apply_path_map(agent_result["updated"], normalize_result.path_map))
+            deleted.extend(apply_path_map(agent_result["deleted"], normalize_result.path_map))
+
         promote_working_copy(task_id, base_dir)
         commit_id = commit_wiki(f"ingest: {', '.join(file.name for file in files)}", base_dir)
-        added = apply_path_map(agent_result["added"], normalize_result.path_map)
-        updated = apply_path_map(agent_result["updated"], normalize_result.path_map)
-        deleted = agent_result["deleted"]
         if config.vector_index.enable:
             try:
                 sync_wiki_vector_index(

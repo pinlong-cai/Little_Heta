@@ -19,8 +19,11 @@ def _config(mineru: MinerUConfig | None = None) -> HetaConfig:
     )
 
 
-def _fake_agent(monkeypatch) -> None:
+def _fake_agent(monkeypatch, calls: list[list[str]] | None = None) -> None:
     def run_merge_agent(*, task_id, documents, root_dir, config):
+        assert len(documents) == 1
+        if calls is not None:
+            calls.append([document.source_name for document in documents])
         pages = root_dir / "pages"
         pages.mkdir(parents=True, exist_ok=True)
         added = []
@@ -94,6 +97,24 @@ def test_insert_same_title_updates_existing_page(monkeypatch, tmp_path: Path) ->
     assert result.updated[0].title == "Shared Topic"
     assert result.updated[0].path == "pages/1-shared-topic.md"
     assert "## Imported Update" in page.read_text(encoding="utf-8")
+
+
+def test_insert_multiple_files_runs_agent_sequentially(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    _fake_agent(monkeypatch, calls)
+    first = tmp_path / "alpha.md"
+    second = tmp_path / "beta.md"
+    first.write_text("# Alpha\n\nFirst details.", encoding="utf-8")
+    second.write_text("# Beta\n\nSecond details.", encoding="utf-8")
+
+    result = insert_paths([first, second], _config(), base_dir=tmp_path)
+
+    wiki = tmp_path / "workspace" / "kb" / "wiki"
+    assert calls[0][0].endswith("_alpha.md")
+    assert calls[1][0].endswith("_beta.md")
+    assert (wiki / "pages" / "1-alpha.md").exists()
+    assert (wiki / "pages" / "2-beta.md").exists()
+    assert [change.path for change in result.added] == ["pages/1-alpha.md", "pages/2-beta.md"]
 
 
 def test_pdf_requires_mineru_when_disabled(tmp_path: Path) -> None:
