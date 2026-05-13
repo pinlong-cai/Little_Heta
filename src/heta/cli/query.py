@@ -31,7 +31,7 @@ def query_command(
         raise typer.Exit(1)
 
     try:
-        with console.status("Querying Little Heta wiki", spinner="dots"):
+        with console.status(f"[bold {HETA}]heta query[/] [{MUTED}]reading wiki[/]", spinner="dots"):
             result = run_wiki_query(question, config, top_k=top_k)
     except Exception as exc:
         console.print(f"[{WARN}]?[/] Query failed.")
