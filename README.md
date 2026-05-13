@@ -67,6 +67,12 @@ Ask a read-only question against the wiki:
 heta query "What is HetaGen?"
 ```
 
+Clean wiki pages and the vector database while keeping raw files:
+
+```bash
+heta clean
+```
+
 Manage vector indexing:
 
 ```bash
