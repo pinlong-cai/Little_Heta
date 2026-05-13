@@ -61,6 +61,13 @@ Insert one file or a directory:
 heta insert ./docs
 ```
 
+Large PDFs are split before parsing by default. Disable this behavior when you
+want to parse a PDF as one source file:
+
+```bash
+heta insert --no-pdf-planning ./large.pdf
+```
+
 Ask a read-only question against the wiki:
 
 ```bash

@@ -30,4 +30,4 @@ class InsertResult:
     updated: list[FileChange]
     deleted: list[FileChange]
     raw_files: list[Path]
-
+    planned_pdf_parts: int = 0

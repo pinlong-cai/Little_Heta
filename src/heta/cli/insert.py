@@ -13,6 +13,7 @@ from heta.config.io import CONFIG_PATH, load_config
 from heta.kb import paths
 from heta.kb.discovery import collect_insert_files, supported_extensions
 from heta.kb.insert import insert_paths
+from heta.kb.pdf_plan import PDF_PAGE_THRESHOLD, estimate_pdf_pages
 
 console = Console()
 
@@ -26,6 +27,11 @@ def insert_command(
     targets: list[Path] = typer.Argument(
         None,
         help="File or directory paths to insert. Defaults to the current directory.",
+    ),
+    pdf_planning: bool = typer.Option(
+        True,
+        "--pdf-planning/--no-pdf-planning",
+        help="Split large PDFs before parsing to avoid oversized agent context.",
     ),
 ) -> None:
     """Insert files into the Little Heta Markdown knowledge base."""
@@ -48,11 +54,11 @@ def insert_command(
         console.print(f"[{MUTED}]  Supported:[/] {extensions}")
         raise typer.Exit(1)
 
-    _show_plan(files, config)
+    _show_plan(files, config, pdf_planning=pdf_planning)
 
     try:
-        with console.status("Parsing files and merging wiki", spinner="dots"):
-            result = insert_paths(targets or [], config)
+        with console.status(f"[bold {HETA}]heta insert[/] [{MUTED}]parsing files and merging wiki[/]", spinner="dots"):
+            result = insert_paths(targets or [], config, enable_pdf_planning=pdf_planning)
     except KeyboardInterrupt:
         console.print(f"\n[{WARN}]Insert cancelled. Rolled back partial changes.[/]")
         raise typer.Exit(130) from None
@@ -64,12 +70,13 @@ def insert_command(
     _show_result(result)
 
 
-def _show_plan(files: list[Path], config) -> None:
+def _show_plan(files: list[Path], config, *, pdf_planning: bool) -> None:
     table = Table.grid(padding=(0, 2))
     table.add_column(style=f"bold {HETA}")
     table.add_column()
     table.add_row("files", str(len(files)))
     table.add_row("mineru", "enabled" if config.mineru.enable else "disabled")
+    table.add_row("pdf planning", "enabled" if pdf_planning else "disabled")
     table.add_row("workspace", str(paths.workspace_root()))
 
     console.print(
@@ -83,7 +90,10 @@ def _show_plan(files: list[Path], config) -> None:
 
     console.print(f"[{MUTED}]Files:[/]")
     for file in files:
-        console.print(f"  [{HETA}]→[/] {file}")
+        suffix = ""
+        if file.suffix.lower() == ".pdf" and pdf_planning:
+            suffix = _pdf_plan_hint(file)
+        console.print(f"  [{HETA}]→[/] {file}{suffix}")
 
 
 def _show_result(result) -> None:
@@ -110,6 +120,19 @@ def _show_result(result) -> None:
     else:
         console.print(f"\n[{MUTED}]wiki commit:[/] no changes")
 
+    if result.planned_pdf_parts:
+        console.print(f"[{MUTED}]pdf parts:[/] {result.planned_pdf_parts}")
+
 
 def _absolute_page_path(relative_path: str) -> str:
     return str((paths.wiki_dir() / relative_path).resolve())
+
+
+def _pdf_plan_hint(file: Path) -> str:
+    try:
+        pages = estimate_pdf_pages(file)
+    except Exception:
+        return f" [{WARN}](page count unavailable)[/]"
+    if pages > PDF_PAGE_THRESHOLD:
+        return f" [{HETA}]({pages} pages, will split)[/]"
+    return f" [{MUTED}]({pages} pages)[/]"

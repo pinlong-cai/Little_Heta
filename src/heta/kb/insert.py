@@ -11,7 +11,8 @@ from heta.kb.discovery import collect_insert_files
 from heta.kb.agent import run_merge_agent
 from heta.kb.models import InsertResult, ParsedDocument
 from heta.kb.parser import parse_document
-from heta.kb.store import commit_wiki, ensure_wiki_layout, reset_wiki, save_raw_file
+from heta.kb.pdf_plan import plan_insert_files
+from heta.kb.store import commit_wiki, ensure_wiki_layout, reset_wiki
 from heta.kb.vector_index import sync_wiki_vector_index
 from heta.kb.wiki import apply_path_map, normalize_wiki_pages, validate_wiki
 from heta.kb.workspace import cleanup_working_copy, create_working_copy, promote_working_copy
@@ -22,6 +23,7 @@ def insert_paths(
     config: HetaConfig,
     *,
     base_dir: Path | None = None,
+    enable_pdf_planning: bool = True,
 ) -> InsertResult:
     files = collect_insert_files(targets, config)
     if not files:
@@ -33,11 +35,20 @@ def insert_paths(
     ensure_wiki_layout(base_dir)
 
     try:
+        prepared_sources, pdf_plans = plan_insert_files(
+            files,
+            enable_pdf_planning=enable_pdf_planning,
+            base_dir=base_dir,
+        )
+        raw_files.extend(source.archived_path for source in prepared_sources)
+        raw_files.extend(
+            source.original_path
+            for source in prepared_sources
+            if source.original_path is not None and source.original_path not in raw_files
+        )
         parsed_documents: list[ParsedDocument] = []
-        for file in files:
-            archived = save_raw_file(file, base_dir)
-            raw_files.append(archived)
-            parsed_documents.append(parse_document(file, archived, config))
+        for source in prepared_sources:
+            parsed_documents.append(parse_document(source.source_path, source.archived_path, config))
 
         working_wiki = create_working_copy(task_id, base_dir)
         agent_result = run_merge_agent(
@@ -72,6 +83,7 @@ def insert_paths(
             updated=updated,
             deleted=deleted,
             raw_files=raw_files,
+            planned_pdf_parts=sum(plan.parts for plan in pdf_plans if plan.enabled),
         )
     except BaseException:
         for raw in raw_files:
