@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.table import Table
+from rich.text import Text
 
 from heta.config.io import CONFIG_PATH, load_config
 from heta.query import QueryResult, run_wiki_query
@@ -41,29 +42,39 @@ def query_command(
 
 
 def _show_result(result: QueryResult) -> None:
+    markdown = Markdown(result.answer.strip() or "No answer returned.")
     console.print(
         Panel(
-            result.answer.strip() or "No answer returned.",
-            title="answer",
+            _ResultRenderable(markdown, _sources_text(result)),
+            title="query",
             border_style=HETA,
             padding=(1, 2),
         )
     )
 
-    if not result.sources:
-        return
 
-    table = Table.grid(padding=(0, 2))
-    table.add_column(style=f"bold {HETA}")
-    table.add_column()
+class _ResultRenderable:
+    def __init__(self, answer: Markdown, sources: Text) -> None:
+        self.answer = answer
+        self.sources = sources
+
+    def __rich_console__(self, console: Console, options):
+        yield Text("Answer:", style=f"bold {HETA}")
+        yield self.answer
+        if self.sources.plain:
+            yield Text("")
+            yield Text("Sources:", style=f"bold {HETA}")
+            yield self.sources
+
+
+def _sources_text(result: QueryResult) -> Text:
+    text = Text()
     for source in result.sources:
         label = f"[{source.wiki_id}]" if source.wiki_id is not None else "[?]"
-        detail = source.title
+        detail = f"{label} {source.title}"
         if source.heading_path:
             detail += f" — {source.heading_path}"
         detail += f" ({source.path})"
-        table.add_row(label, detail)
-
-    console.print()
-    console.print(Panel(table, title="sources", border_style=HETA, padding=(1, 2)))
-
+        text.append(detail + "\n")
+    text.rstrip()
+    return text
