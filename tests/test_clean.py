@@ -43,3 +43,17 @@ def test_clean_knowledge_base_is_idempotent(tmp_path: Path) -> None:
     assert first.deleted_vector_files == 0
     assert second.deleted_pages == 0
     assert second.deleted_vector_files == 0
+
+
+def test_clean_plan_lists_pages_only(monkeypatch, tmp_path: Path) -> None:
+    pages = paths.pages_dir(tmp_path)
+    pages.mkdir(parents=True)
+    (pages / "1-a.md").write_text("A", encoding="utf-8")
+    (pages / "2-b.md").write_text("B", encoding="utf-8")
+    paths.raw_dir(tmp_path).mkdir(parents=True)
+    (paths.raw_dir(tmp_path) / "source.md").write_text("raw", encoding="utf-8")
+    monkeypatch.setattr("heta.cli.clean.paths.pages_dir", lambda: pages)
+
+    from heta.cli.clean import _wiki_pages
+
+    assert [page.name for page in _wiki_pages()] == ["1-a.md", "2-b.md"]

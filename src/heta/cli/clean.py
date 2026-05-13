@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -31,8 +33,12 @@ def clean_command(
         console.print(f"[{MUTED}]  Next:[/] [bold {HETA}]heta init[/]")
         raise typer.Exit(1)
 
-    _show_plan()
-    if not yes and not Confirm.ask("Continue?", default=False):
+    pages = _wiki_pages()
+    _show_plan(pages)
+    if not yes and not Confirm.ask(
+        "Clear the current Heta knowledge base? You can restore this deletion later with git",
+        default=False,
+    ):
         console.print(f"[{MUTED}]Clean cancelled.[/]")
         raise typer.Exit(0)
 
@@ -47,15 +53,16 @@ def clean_command(
     _show_result(summary)
 
 
-def _show_plan() -> None:
+def _show_plan(pages: list[Path]) -> None:
     table = Table.grid(padding=(0, 2))
-    table.add_column(style=f"bold {HETA}")
+    table.add_column(style=f"bold {HETA}", no_wrap=True)
     table.add_column()
-    table.add_row("clean", "wiki pages")
-    table.add_row("reset", str(paths.index_path()))
-    table.add_row("append", str(paths.log_path()))
-    table.add_row("delete", str(paths.vector_db_path()))
-    table.add_row("keep", str(paths.raw_dir()))
+    if pages:
+        for page in pages:
+            table.add_row("delete", f"pages/{page.name}")
+    else:
+        table.add_row("delete", "no wiki pages")
+    table.add_row("restore", "available through wiki git history after clean commit")
 
     console.print(
         Panel(
@@ -67,6 +74,13 @@ def _show_plan() -> None:
     )
 
 
+def _wiki_pages() -> list[Path]:
+    pages_dir = paths.pages_dir()
+    if not pages_dir.exists():
+        return []
+    return sorted(page for page in pages_dir.glob("*.md") if page.is_file())
+
+
 def _show_result(summary: CleanSummary) -> None:
     console.print()
     console.print(f"[{OK}]✓[/] Clean completed.")
@@ -76,4 +90,3 @@ def _show_result(summary: CleanSummary) -> None:
         console.print(f"[{MUTED}]wiki commit:[/] [bold {HETA}]{summary.commit_id}[/]")
     else:
         console.print(f"[{MUTED}]wiki commit:[/] no changes")
-
