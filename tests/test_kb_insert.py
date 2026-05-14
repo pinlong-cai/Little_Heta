@@ -138,6 +138,15 @@ def test_pdf_requires_mineru_when_disabled(tmp_path: Path) -> None:
         collect_insert_files([source], _config())
 
 
+def test_collect_insert_files_accepts_common_images(tmp_path: Path) -> None:
+    image = tmp_path / "diagram.png"
+    image.write_bytes(b"png")
+
+    files = collect_insert_files([image], _config())
+
+    assert files == [image]
+
+
 def test_collect_directory_skips_workspace(tmp_path: Path) -> None:
     source = tmp_path / "a.md"
     workspace_file = tmp_path / "workspace" / "kb" / "wiki" / "pages" / "old.md"

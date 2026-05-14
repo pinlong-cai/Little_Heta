@@ -8,10 +8,11 @@ from heta.config.schema import HetaConfig
 
 PLAIN_EXTENSIONS = {".md", ".markdown", ".txt"}
 MINERU_EXTENSIONS = {".pdf"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 def supported_extensions(config: HetaConfig) -> set[str]:
-    extensions = set(PLAIN_EXTENSIONS)
+    extensions = set(PLAIN_EXTENSIONS) | IMAGE_EXTENSIONS
     if config.mineru.enable:
         extensions |= MINERU_EXTENSIONS
     return extensions
@@ -58,4 +59,3 @@ def _add_supported_file(files: list[Path], path: Path, extensions: set[str]) -> 
 def _is_ignored_path(path: Path) -> bool:
     ignored = {".git", ".worktrees", "__pycache__", ".pytest_cache", "workspace"}
     return any(part in ignored for part in path.parts)
-

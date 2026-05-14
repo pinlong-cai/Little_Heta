@@ -14,8 +14,16 @@ def slugify(value: str) -> str:
 
 
 def extract_title(markdown: str, fallback: str) -> str:
+    in_frontmatter = False
     for line in markdown.splitlines():
         stripped = line.strip()
+        if stripped == "---":
+            in_frontmatter = not in_frontmatter
+            continue
+        if in_frontmatter and stripped.startswith("title:"):
+            title = stripped.split(":", 1)[1].strip()
+            if title:
+                return title
         if stripped.startswith("#"):
             title = stripped.lstrip("#").strip()
             if title:
