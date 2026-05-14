@@ -5,7 +5,7 @@ import pytest
 from heta.config.schema import InsertPlanningConfig, HetaConfig, LLMConfig, MinerUConfig, VectorIndexConfig
 from heta.kb import paths
 from heta.kb.text import frontmatter_page
-from heta.query.agent import _build_sources
+from heta.query.agent import _parse_final_answer, _vector_match_map
 from heta.query.models import QueryResult, QuerySource, VectorMatch
 from heta.query.pipeline import run_wiki_query
 from heta.query.tools import format_vector_matches, read_page, source_from_page_path
@@ -63,7 +63,7 @@ def test_source_from_page_path_reads_frontmatter_and_wiki_id(tmp_path: Path) -> 
     assert source == QuerySource(12, "HetaGen", "pages/12-hetagen.md", "Content")
 
 
-def test_query_sources_only_include_pages_read_by_agent(tmp_path: Path) -> None:
+def test_query_sources_include_validated_vector_chunks_only(tmp_path: Path) -> None:
     pages = paths.pages_dir(tmp_path)
     pages.mkdir(parents=True)
     (pages / "8-image.md").write_text(frontmatter_page("Image", "image.png", "Image summary.", "Body."), encoding="utf-8")
@@ -71,10 +71,45 @@ def test_query_sources_only_include_pages_read_by_agent(tmp_path: Path) -> None:
         frontmatter_page("Audio", "audio.mp3", "Audio summary.", "Transcript."),
         encoding="utf-8",
     )
+    vector_matches = _vector_match_map(
+        [
+            VectorMatch(8, "8-image.md", "pages/8-image.md", "8:abc", "Content > Visible Text", "image text", 0.8),
+            VectorMatch(10, "10-audio.md", "pages/10-audio.md", "10:def", "Content > Transcript", "hello", 0.9),
+        ]
+    )
 
-    sources = _build_sources(read_paths={"pages/10-audio.md"}, base_dir=tmp_path)
+    final = _parse_final_answer(
+        text=(
+            '{"answer": "The audio says hello.", "used_sources": ['
+            '{"path": "pages/10-audio.md", "heading_path": "Content > Transcript"},'
+            '{"path": "pages/8-image.md", "heading_path": "Content > Missing"}'
+            "]}"
+        ),
+        read_paths=set(),
+        vector_matches=vector_matches,
+        base_dir=tmp_path,
+    )
 
-    assert sources == [QuerySource(10, "Audio", "pages/10-audio.md")]
+    assert final.answer == "The audio says hello."
+    assert final.sources == [QuerySource(10, "Audio", "pages/10-audio.md", "Content > Transcript")]
+
+
+def test_query_sources_accept_read_pages_without_vector_heading(tmp_path: Path) -> None:
+    pages = paths.pages_dir(tmp_path)
+    pages.mkdir(parents=True)
+    (pages / "10-audio.md").write_text(
+        frontmatter_page("Audio", "audio.mp3", "Audio summary.", "Transcript."),
+        encoding="utf-8",
+    )
+
+    final = _parse_final_answer(
+        text='{"answer": "From the full page.", "used_sources": [{"path": "pages/10-audio.md"}]}',
+        read_paths={"pages/10-audio.md"},
+        vector_matches={},
+        base_dir=tmp_path,
+    )
+
+    assert final.sources == [QuerySource(10, "Audio", "pages/10-audio.md")]
 
 
 def test_format_vector_matches_includes_chunk_identity() -> None:
