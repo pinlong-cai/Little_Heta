@@ -60,7 +60,7 @@ def insert_command(
 
     try:
         with _insert_progress() as progress:
-            task_id = progress.add_task("preparing insert", total=100, completed=0)
+            task_id = progress.add_task("preparing files", total=100, completed=1)
 
             def on_progress(event: InsertProgress) -> None:
                 progress.update(task_id, completed=event.percent, description=_progress_description(event))
@@ -147,6 +147,8 @@ def _insert_progress() -> Progress:
 
 
 def _progress_description(event: InsertProgress) -> str:
+    if event.phase == "prepare":
+        return event.label
     if event.phase == "merge":
         return f"merging {event.current}/{event.total} · {event.label}"
     if event.phase == "finalize":

@@ -27,6 +27,7 @@ def insert_paths(
     enable_pdf_planning: bool = True,
     on_progress: Callable[[InsertProgress], None] | None = None,
 ) -> InsertResult:
+    _emit_progress(on_progress, "prepare", 1, 0, 0, "preparing files")
     files = collect_insert_files(targets, config)
     if not files:
         raise ValueError("No supported files found.")
