@@ -8,7 +8,7 @@ from heta.kb.text import frontmatter_page
 from heta.query.agent import _parse_final_answer, _vector_match_map
 from heta.query.models import QueryResult, QuerySource, VectorMatch
 from heta.query.pipeline import run_wiki_query
-from heta.query.tools import format_vector_matches, read_page, source_from_page_path
+from heta.query.tools import format_vector_matches, read_page, read_raw, source_from_page_path
 
 
 def _config(vector_enabled: bool = False) -> HetaConfig:
@@ -51,6 +51,16 @@ def test_read_page_is_limited_to_pages(tmp_path: Path) -> None:
     assert read_page("pages/1-hetagen.md", tmp_path) == "hello"
     assert read_page("../heta.yaml", tmp_path).startswith("error:")
     assert read_page("index.md", tmp_path).startswith("error:")
+
+
+def test_read_raw_is_limited_to_raw_directory(tmp_path: Path) -> None:
+    raw = paths.raw_dir(tmp_path)
+    raw.mkdir(parents=True)
+    (raw / "module.py").write_text("def run():\n    return True\n", encoding="utf-8")
+
+    assert "def run" in read_raw("raw/module.py", tmp_path)
+    assert "def run" in read_raw("../../raw/module.py", tmp_path)
+    assert read_raw("../heta.yaml", tmp_path).startswith("error:")
 
 
 def test_source_from_page_path_reads_frontmatter_and_wiki_id(tmp_path: Path) -> None:
@@ -110,6 +120,17 @@ def test_query_sources_accept_read_pages_without_vector_heading(tmp_path: Path) 
     )
 
     assert final.sources == [QuerySource(10, "Audio", "pages/10-audio.md")]
+
+
+def test_query_sources_reject_raw_used_sources(tmp_path: Path) -> None:
+    final = _parse_final_answer(
+        text='{"answer": "Raw helped.", "used_sources": [{"path": "raw/module.py"}]}',
+        read_paths=set(),
+        vector_matches={},
+        base_dir=tmp_path,
+    )
+
+    assert final.sources == []
 
 
 def test_format_vector_matches_includes_chunk_identity() -> None:

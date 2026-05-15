@@ -16,41 +16,68 @@ from heta.query.tools import (
     format_vector_matches,
     read_index,
     read_page,
+    read_raw,
     search_vector,
     source_from_page_path,
 )
 
+READ_PAGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_page",
+        "description": "Read a wiki page. Valid paths: pages/*.md.",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+READ_RAW_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_raw",
+        "description": "Read an original raw file referenced by a wiki page. Valid paths stay under raw/.",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+SEARCH_VECTOR_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_vector",
+        "description": "Search semantic wiki chunks. Returns wiki id, page path, heading path, content, and score.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 QUERY_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "read_page",
-            "description": "Read a wiki page. Valid paths: pages/*.md.",
-            "parameters": {
-                "type": "object",
-                "properties": {"path": {"type": "string"}},
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_vector",
-            "description": "Search semantic wiki chunks. Returns wiki id, page path, heading path, content, and score.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-        },
-    },
+    READ_PAGE_TOOL,
+    READ_RAW_TOOL,
+    SEARCH_VECTOR_TOOL,
 ]
+
+QUERY_TOOLS_NO_VECTOR = [
+    READ_PAGE_TOOL,
+    READ_RAW_TOOL,
+]
+
+RAW_SNIPPET_MAX_CHARS = 16000
 
 
 @dataclass(frozen=True)
@@ -87,7 +114,7 @@ def run_query_agent(
         }
     ]
     read_paths: set[str] = set()
-    tools = QUERY_TOOLS if config.vector_index.enable else [QUERY_TOOLS[0]]
+    tools = QUERY_TOOLS if config.vector_index.enable else QUERY_TOOLS_NO_VECTOR
 
     while stats.should_continue():
         response = _chat_completion(
@@ -176,6 +203,8 @@ Rules:
 - Treat index.md as the global map of pages, ids, paths, and summaries.
 - Treat semantic matches as starting evidence, not final truth.
 - If a chunk is relevant but incomplete, call read_page(path) for the full page.
+- You may call read_raw(path) only for original raw files referenced by wiki pages.
+  Raw files help inspect details, but raw files must never appear in used_sources.
 - Follow useful [[Wiki Links]] by reading the linked pages when the index gives their paths.
 {vector_rule}
 - Stop reading when the context is enough.
@@ -228,6 +257,9 @@ def _execute_tools(
                 output = read_page(path, base_dir)
                 if not output.startswith("error:"):
                     read_paths.add(path.replace("\\", "/").strip("/"))
+            elif name == "read_raw":
+                path = str(arguments.get("path", ""))
+                output = _trim_raw_output(read_raw(path, base_dir))
             elif name == "search_vector":
                 query = str(arguments.get("query", ""))
                 top_k = int(arguments.get("top_k") or default_top_k)
@@ -238,6 +270,12 @@ def _execute_tools(
                 output = f"error: unknown tool {name}"
         results.append({"role": "tool", "tool_call_id": tool_call.id, "content": output})
     return results
+
+
+def _trim_raw_output(output: str) -> str:
+    if output.startswith("error:") or len(output) <= RAW_SNIPPET_MAX_CHARS:
+        return output
+    return output[:RAW_SNIPPET_MAX_CHARS] + "\n\n[truncated raw output]"
 
 
 def _vector_match_map(matches: list[VectorMatch]) -> dict[tuple[str, str], VectorMatch]:

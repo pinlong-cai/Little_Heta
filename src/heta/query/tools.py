@@ -31,6 +31,19 @@ def read_page(path: str, base_dir: Path | None = None) -> str:
         return f"error: {exc}"
 
 
+def read_raw(path: str, base_dir: Path | None = None) -> str:
+    try:
+        normalized = normalize_raw_path(path)
+        full = _resolve_safe(paths.raw_dir(base_dir), normalized)
+        if not full.exists():
+            return f"error: raw/{normalized} does not exist"
+        if not full.is_file():
+            return f"error: raw/{normalized} is not a file"
+        return full.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return f"error: {exc}"
+
+
 def search_vector(
     query: str,
     config: HetaConfig,
@@ -72,6 +85,18 @@ def normalize_page_path(path: str) -> str:
     if normalized.startswith("pages/") and normalized.endswith(".md"):
         return normalized
     raise ValueError(f"path must be pages/*.md, got: {path!r}")
+
+
+def normalize_raw_path(path: str) -> str:
+    normalized = path.replace("\\", "/").strip()
+    if "/raw/" in normalized:
+        normalized = normalized.split("/raw/", 1)[1]
+    elif normalized.startswith("raw/"):
+        normalized = normalized[4:]
+    normalized = normalized.strip("/")
+    if not normalized or normalized.startswith("../") or "/../" in normalized:
+        raise ValueError(f"path must stay within raw/, got: {path!r}")
+    return normalized
 
 
 def wiki_id_from_page_name(page_name: str) -> int | None:
@@ -116,4 +141,3 @@ def _resolve_safe(root_dir: Path, normalized: str) -> Path:
 def _frontmatter_value(text: str, key: str) -> str | None:
     match = re.search(rf"^{re.escape(key)}:\s*(.+)$", text, flags=re.MULTILINE)
     return match.group(1).strip() if match else None
-

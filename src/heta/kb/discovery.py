@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from heta.config.schema import HetaConfig
+from heta.kb.code_parser import CODE_EXTENSIONS
 
 PLAIN_EXTENSIONS = {".md", ".markdown", ".txt"}
 MINERU_EXTENSIONS = {".pdf"}
@@ -13,7 +14,7 @@ AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".webm", ".mp4"}
 
 
 def supported_extensions(config: HetaConfig) -> set[str]:
-    extensions = set(PLAIN_EXTENSIONS) | IMAGE_EXTENSIONS | AUDIO_EXTENSIONS
+    extensions = set(PLAIN_EXTENSIONS) | IMAGE_EXTENSIONS | AUDIO_EXTENSIONS | CODE_EXTENSIONS
     if config.mineru.enable:
         extensions |= MINERU_EXTENSIONS
     return extensions
