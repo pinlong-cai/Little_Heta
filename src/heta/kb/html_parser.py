@@ -22,9 +22,12 @@ NOISE_SELECTORS = (
     "[role='contentinfo']",
     "[role='search']",
     ".mw-editsection",
+    ".mw-indicators",
     ".mw-jump-link",
     ".mw-portlet",
     ".mw-sidebar",
+    ".ambox",
+    ".metadata",
     ".noprint",
     ".navbox",
     ".navbar",
@@ -32,6 +35,7 @@ NOISE_SELECTORS = (
     ".shortdescription",
     ".sidebar",
     ".toc",
+    ".topicon",
     "#catlinks",
     "#footer",
     "#mw-navigation",
@@ -63,7 +67,8 @@ def parse_html_markdown(source_path: Path, archived_path: Path) -> str:
     asset_dir = archived_path.parent / "assets" / archived_path.stem
     converter = _HtmlMarkdownConverter(source_path=source_path, asset_dir=asset_dir, asset_stem=archived_path.stem)
     content = converter.convert(body).strip()
-    summary = _summary(title, description, content)
+    content = _ensure_content_title(content, title)
+    summary = _html_summary(body, title, description) or _summary(title, description, content)
 
     if converter.assets:
         asset_dir.mkdir(parents=True, exist_ok=True)
@@ -291,6 +296,13 @@ def _main_content(soup: BeautifulSoup) -> Tag:
     return soup
 
 
+def _ensure_content_title(content: str, title: str) -> str:
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if lines and lines[0] == f"### {title}":
+        return content
+    return f"### {title}\n{content}" if content else f"### {title}"
+
+
 def _page_title(soup: BeautifulSoup, source_path: Path) -> str:
     for selector in ("h1", "title"):
         tag = soup.find(selector)
@@ -307,6 +319,41 @@ def _description(soup: BeautifulSoup) -> str:
         if tag and tag.get("content"):
             return _clean_text(str(tag.get("content")))
     return ""
+
+
+def _html_summary(body: Tag, title: str, description: str) -> str:
+    if description:
+        return description
+    for paragraph in body.find_all("p"):
+        if _is_non_content_node(paragraph):
+            continue
+        text = _lead_summary_text(_clean_text(paragraph.get_text(" ", strip=True)))
+        if _summary_candidate(text):
+            return text[:240].rstrip() + ("..." if len(text) > 240 else "")
+    return ""
+
+
+def _is_non_content_node(tag: Tag) -> bool:
+    blocked_tags = {"table", "figure", "aside", "nav", "footer", "header"}
+    blocked_classes = {
+        "ambox",
+        "hatnote",
+        "infobox",
+        "metadata",
+        "navbox",
+        "noprint",
+        "shortdescription",
+        "sidebar",
+    }
+    for parent in [tag, *tag.parents]:
+        if not isinstance(parent, Tag):
+            continue
+        if parent.name and parent.name.lower() in blocked_tags:
+            return True
+        classes = set(parent.get("class", []))
+        if classes & blocked_classes:
+            return True
+    return False
 
 
 def _summary(title: str, description: str, content: str) -> str:

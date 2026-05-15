@@ -84,6 +84,44 @@ def test_parse_html_markdown_keeps_remote_images_as_urls(tmp_path: Path) -> None
     assert '"raw_path": null' in manifest
 
 
+def test_parse_html_markdown_prefers_main_content_and_clean_summary(tmp_path: Path) -> None:
+    source = tmp_path / "wiki.html"
+    archived = tmp_path / "raw" / "2026-05-15_wiki.html"
+    archived.parent.mkdir()
+    source.write_text(
+        """
+<html>
+<head><title>Knowledge graph</title></head>
+<body>
+  <nav>Jump to content</nav>
+  <main>
+    <div class="mw-indicators"><img src="//example.com/protect.svg" alt="Page semi-protected"></div>
+    <table class="ambox"><tr><td>This article has multiple issues.</td></tr></table>
+    <div class="mw-parser-output">
+      <p class="mw-empty-elt"></p>
+      <p>For other uses, see Knowledge graph (disambiguation).</p>
+      <p><b>Knowledge graph</b> is a graph-structured knowledge base used to represent entities, facts, and relationships for retrieval and reasoning systems.</p>
+      <h2>History</h2>
+      <p>The term has been used in several database and semantic web contexts.</p>
+    </div>
+  </main>
+</body>
+</html>
+""",
+        encoding="utf-8",
+    )
+    archived.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    markdown = parse_html_markdown(source, archived)
+
+    assert "Jump to content" not in markdown
+    assert "Page semi-protected" not in markdown
+    assert "This article has multiple issues" not in markdown
+    assert "### Knowledge graph" in markdown
+    assert "## Summary\nKnowledge graph is a graph-structured knowledge base" in markdown
+    assert "#### History" in markdown
+
+
 def test_parse_document_accepts_html_branch(tmp_path: Path) -> None:
     source = tmp_path / "page.html"
     archived = tmp_path / "2026-05-15_page.html"
