@@ -14,6 +14,7 @@ class CleanSummary:
     deleted_pages: int
     deleted_vector_files: int
     commit_id: str | None
+    invalidated_memories: int = 0
 
 
 def clean_knowledge_base(*, base_dir: Path | None = None) -> CleanSummary:
@@ -26,10 +27,14 @@ def clean_knowledge_base(*, base_dir: Path | None = None) -> CleanSummary:
     deleted_vector_files = _clear_vector_db(base_dir)
     commit_id = commit_wiki("chore: clean wiki knowledge base", base_dir)
 
+    from heta.mem.kb_invalidate import invalidate_all
+    invalidated = invalidate_all()
+
     return CleanSummary(
         deleted_pages=deleted_pages,
         deleted_vector_files=deleted_vector_files,
         commit_id=commit_id,
+        invalidated_memories=invalidated,
     )
 
 

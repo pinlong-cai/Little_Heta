@@ -122,6 +122,10 @@ def insert_paths(
             except Exception:
                 pass
         cleanup_working_copy(task_id, base_dir)
+
+        from heta.mem.kb_invalidate import invalidate_by_paths
+        invalidated = invalidate_by_paths(c.path for c in (*updated, *deleted))
+
         _emit_progress(on_progress, "done", 100, total_documents, total_documents, "insert completed")
 
         return InsertResult(
@@ -131,6 +135,7 @@ def insert_paths(
             deleted=deleted,
             raw_files=raw_files,
             planned_pdf_parts=sum(plan.parts for plan in pdf_plans if plan.enabled),
+            invalidated_memories=invalidated,
         )
     except BaseException:
         for raw in raw_files:

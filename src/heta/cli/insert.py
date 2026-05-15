@@ -131,6 +131,9 @@ def _show_result(result) -> None:
     if result.planned_pdf_parts:
         console.print(f"[{MUTED}]pdf parts:[/] {result.planned_pdf_parts}")
 
+    if result.invalidated_memories:
+        console.print(f"[{MUTED}]invalidated memories:[/] {result.invalidated_memories}")
+
 
 def _insert_progress() -> Progress:
     return Progress(
