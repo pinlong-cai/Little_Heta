@@ -133,6 +133,19 @@ def test_query_sources_reject_raw_used_sources(tmp_path: Path) -> None:
     assert final.sources == []
 
 
+def test_parse_final_answer_marks_non_json_response_invalid(tmp_path: Path) -> None:
+    final = _parse_final_answer(
+        text="This is not JSON.",
+        read_paths=set(),
+        vector_matches={},
+        base_dir=tmp_path,
+    )
+
+    assert final.answer == "This is not JSON."
+    assert final.sources == []
+    assert not final.valid_json
+
+
 def test_format_vector_matches_includes_chunk_identity() -> None:
     text = format_vector_matches(
         [

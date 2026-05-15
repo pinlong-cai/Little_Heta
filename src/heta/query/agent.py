@@ -84,6 +84,7 @@ RAW_SNIPPET_MAX_CHARS = 16000
 class FinalAnswer:
     answer: str
     sources: list[QuerySource]
+    valid_json: bool = True
 
 
 def run_query_agent(
@@ -135,6 +136,24 @@ def run_query_agent(
                 vector_matches=vector_matches,
                 base_dir=base_dir,
             )
+            if not final_answer.valid_json:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.content or "",
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous response was not valid JSON. Return exactly one valid JSON object now, "
+                            "with keys answer and used_sources. Do not include Markdown fences or text outside JSON."
+                        ),
+                    }
+                )
+                stats.record("retry final JSON", response.usage)
+                continue
             stats.record_completion(response.usage)
             return QueryResult(
                 answer=final_answer.answer,
@@ -291,7 +310,7 @@ def _parse_final_answer(
 ) -> FinalAnswer:
     data = _extract_json_object(text)
     if data is None:
-        return FinalAnswer(answer=text, sources=[])
+        return FinalAnswer(answer=text, sources=[], valid_json=False)
 
     answer = data.get("answer")
     used_sources = data.get("used_sources")
