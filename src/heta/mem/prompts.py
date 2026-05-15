@@ -113,6 +113,23 @@ Rules:
 - If the page contains nothing relevant, return {"insights": []}.
 """
 
+INSIGHT_DEDUP_PROMPT = """\
+You are a memory deduplication judge.
+
+Given a NEW insight and a list of EXISTING similar insights already stored in memory,
+decide whether the new insight is already fully covered and would be redundant to store.
+
+Return STRICT JSON only. No markdown, no extra text.
+Schema: {"duplicate": true}  OR  {"duplicate": false}
+
+Rules:
+- Return {"duplicate": true} ONLY if an existing insight conveys the same fact or knowledge
+  as the new insight. A paraphrase of the same fact counts as duplicate.
+- Return {"duplicate": false} if the new insight adds ANY information not present in the
+  existing ones, even if they are thematically related.
+- When in doubt, return {"duplicate": false} — prefer storing over silently dropping.
+"""
+
 CONFLICT_JUDGE_PROMPT = """\
 You are a memory conflict resolver. Given a new fact and a list of existing facts,
 decide which existing facts are directly contradicted by the new fact and should be deprecated.
