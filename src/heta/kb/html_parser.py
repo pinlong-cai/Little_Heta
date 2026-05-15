@@ -16,6 +16,28 @@ from bs4.element import NavigableString, Tag
 HTML_EXTENSIONS = {".html", ".htm"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
 NOISE_TAGS = {"script", "style", "nav", "footer", "aside", "iframe", "button", "noscript"}
+NOISE_SELECTORS = (
+    "[role='navigation']",
+    "[role='banner']",
+    "[role='contentinfo']",
+    "[role='search']",
+    ".mw-editsection",
+    ".mw-jump-link",
+    ".mw-portlet",
+    ".mw-sidebar",
+    ".noprint",
+    ".navbox",
+    ".navbar",
+    ".printfooter",
+    ".shortdescription",
+    ".sidebar",
+    ".toc",
+    "#catlinks",
+    "#footer",
+    "#mw-navigation",
+    "#p-lang-btn",
+    "#siteNotice",
+)
 
 
 @dataclass(frozen=True)
@@ -37,7 +59,7 @@ def parse_html_markdown(source_path: Path, archived_path: Path) -> str:
 
     title = _page_title(soup, source_path)
     description = _description(soup)
-    body = soup.find("body") or soup
+    body = _main_content(soup)
     asset_dir = archived_path.parent / "assets" / archived_path.stem
     converter = _HtmlMarkdownConverter(source_path=source_path, asset_dir=asset_dir, asset_stem=archived_path.stem)
     content = converter.convert(body).strip()
@@ -225,6 +247,8 @@ class _HtmlMarkdownConverter:
         return markdown_path, raw_path
 
     def _link(self, node: Tag) -> str:
+        if node.find("img"):
+            return self._inline_children(node)
         text = self._inline_children(node) or _clean_text(node.get_text(" ", strip=True))
         href = str(node.get("href") or "").strip()
         if not href:
@@ -244,6 +268,27 @@ class _HtmlMarkdownConverter:
 def _remove_noise(soup: BeautifulSoup) -> None:
     for tag in soup.find_all(list(NOISE_TAGS)):
         tag.decompose()
+    for selector in NOISE_SELECTORS:
+        for tag in soup.select(selector):
+            tag.decompose()
+
+
+def _main_content(soup: BeautifulSoup) -> Tag:
+    selectors = (
+        ".mw-parser-output",
+        "article",
+        "main",
+        "[role='main']",
+        "#bodyContent",
+        "#mw-content-text",
+        "#content",
+        "body",
+    )
+    for selector in selectors:
+        tag = soup.select_one(selector)
+        if tag and _clean_text(tag.get_text(" ", strip=True)):
+            return tag
+    return soup
 
 
 def _page_title(soup: BeautifulSoup, source_path: Path) -> str:
@@ -267,10 +312,35 @@ def _description(soup: BeautifulSoup) -> str:
 def _summary(title: str, description: str, content: str) -> str:
     if description:
         return description
-    text = _strip_markdown(content)
-    if text:
-        return text[:240].rstrip() + ("..." if len(text) > 240 else "")
+    for block in re.split(r"\n\s*\n", content):
+        text = _lead_summary_text(_strip_markdown(block))
+        if _summary_candidate(text):
+            return text[:240].rstrip() + ("..." if len(text) > 240 else "")
     return f"HTML page about {title}."
+
+
+def _lead_summary_text(text: str) -> str:
+    text = re.sub(r"^For other uses, see .*?\.\s*", "", text)
+    match = re.search(r"\bIn\s+[A-Za-z]", text)
+    if match and 0 < match.start() < 420:
+        return text[match.start() :]
+    return text
+
+
+def _summary_candidate(text: str) -> bool:
+    if len(text) < 80:
+        return False
+    lowered = text.lower()
+    skipped_prefixes = (
+        "for other uses",
+        "image note:",
+        "jump to content",
+        "main article:",
+        "see also:",
+    )
+    if lowered.startswith(skipped_prefixes):
+        return False
+    return any(char.isalpha() for char in text)
 
 
 def _img_src(node: Tag) -> str:
@@ -312,7 +382,9 @@ def _compact_blocks(text: str) -> str:
 
 
 def _strip_markdown(text: str) -> str:
-    cleaned = re.sub(r"!\[[^\]]*]\([^)]+\)", " ", text)
+    cleaned = re.sub(r"!\[[^\]]*]\(<[^>]*>\)", " ", text)
+    cleaned = re.sub(r"!\[[^\]]*]\([^)]+\)", " ", cleaned)
+    cleaned = re.sub(r"\[([^\]]+)]\(<[^>]*>\)", r"\1", cleaned)
     cleaned = re.sub(r"\[([^\]]+)]\([^)]+\)", r"\1", cleaned)
     cleaned = re.sub(r"[#*_`>|-]+", " ", cleaned)
     return _clean_text(cleaned)
