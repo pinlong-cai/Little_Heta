@@ -252,7 +252,7 @@ def _regex_symbols(suffix: str, text: str) -> list[CodeSymbol]:
     for kind, pattern in patterns.get(suffix, []):
         for match in pattern.finditer(text):
             name = match.group(1)
-            start_line = text[: match.start()].count("\n") + 1
+            start_line = text[: match.start(1)].count("\n") + 1
             if (name, start_line) in seen:
                 continue
             seen.add((name, start_line))

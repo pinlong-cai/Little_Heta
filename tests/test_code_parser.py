@@ -57,6 +57,20 @@ def test_extract_code_symbols_handles_config_and_sql() -> None:
     assert sql_symbols[0].name == "CREATE TABLE wiki_chunks"
 
 
+def test_extract_code_symbols_keeps_regex_language_signatures() -> None:
+    cases = [
+        (Path("sample.go"), "type QueryService struct{}\n\nfunc SearchWiki(query string) string {\n    return query\n}\n", "SearchWiki", "func SearchWiki"),
+        (Path("sample.rs"), "pub struct QueryService;\n\npub fn search_wiki(query: &str) -> &str {\n    query\n}\n", "search_wiki", "pub fn search_wiki"),
+        (Path("sample.js"), "export function runQuery(query) {\n  return query;\n}\n", "runQuery", "export function runQuery"),
+        (Path("sample.ts"), "export function formatAnswer(result: QueryResult) {\n  return result.answer;\n}\n", "formatAnswer", "export function formatAnswer"),
+    ]
+
+    for path, text, name, signature_prefix in cases:
+        symbols = extract_code_symbols(path, text)
+        symbol = next(symbol for symbol in symbols if symbol.name == name)
+        assert symbol.signature.startswith(signature_prefix)
+
+
 def test_parse_document_accepts_code_branch(tmp_path: Path) -> None:
     source = tmp_path / "tool.ts"
     archived = tmp_path / "2026-05-15_tool.ts"
