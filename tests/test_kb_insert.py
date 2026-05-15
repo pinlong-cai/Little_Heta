@@ -180,7 +180,7 @@ def test_collect_insert_files_accepts_audio_and_video(tmp_path: Path) -> None:
     assert files == [audio, video]
 
 
-def test_collect_insert_files_accepts_code_but_not_html(tmp_path: Path) -> None:
+def test_collect_insert_files_accepts_code_and_html(tmp_path: Path) -> None:
     code = tmp_path / "module.py"
     html = tmp_path / "index.html"
     code.write_text("def run():\n    pass\n", encoding="utf-8")
@@ -188,7 +188,7 @@ def test_collect_insert_files_accepts_code_but_not_html(tmp_path: Path) -> None:
 
     files = collect_insert_files([tmp_path], _config())
 
-    assert files == [code]
+    assert files == [html, code]
 
 
 def test_collect_directory_skips_workspace(tmp_path: Path) -> None:
