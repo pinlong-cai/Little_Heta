@@ -43,6 +43,7 @@ def insights_command(
     init_db(conn)
     try:
         rows = _fetch_insights(conn, source=source, question=question, limit=limit)
+        total = _count_total(conn, source=source, question=question)
     finally:
         conn.close()
 
@@ -50,7 +51,6 @@ def insights_command(
         console.print(f"[{MUTED}]No insights matched.[/]")
         return
 
-    total = _count_total(source=source, question=question)
     table = Table(
         title=f"kb_insights ({len(rows)} of {total} shown)",
         show_lines=not full,
@@ -58,7 +58,7 @@ def insights_command(
     )
     table.add_column("#", style="dim", justify="right", no_wrap=True)
     table.add_column("created", style=MUTED, no_wrap=True)
-    table.add_column("source", style=MUTED)
+    table.add_column("sources", style=MUTED)
     table.add_column("question", style=MUTED)
     table.add_column("insight")
 
@@ -67,10 +67,13 @@ def insights_command(
         question_text = row["question"] or ""
         if not full:
             question_text = _truncate(question_text, 50)
+        sources_text = "\n".join(row["source_paths"]) if full else _truncate(
+            ", ".join(row["source_paths"]), 40
+        )
         table.add_row(
             str(i),
             _format_ts(row["created_at"]),
-            row["source_path"] or "",
+            sources_text,
             question_text,
             insight_text,
         )
@@ -83,39 +86,60 @@ def _fetch_insights(
     source: str | None,
     question: str | None,
     limit: int,
-) -> list[sqlite3.Row]:
-    where, params = _build_where(source=source, question=question)
-    sql = f"""
-        SELECT i.insight, i.question, i.source_path, i.created_at
+) -> list[dict]:
+    """Fetch insights and their full source_paths list."""
+    base_sql = """
+        SELECT i.memory_id, i.insight, i.question, i.created_at
         FROM kb_insight i
         JOIN memory_meta m ON m.memory_id = i.memory_id
-        WHERE m.status = 'active' {where}
-        ORDER BY i.created_at DESC
-        LIMIT ?
+        WHERE m.status = 'active'
     """
-    return conn.execute(sql, (*params, max(1, limit))).fetchall()
+    clauses, params = _build_filters(source=source, question=question)
+    sql = f"{base_sql} {clauses} ORDER BY i.created_at DESC LIMIT ?"
+    params.append(max(1, limit))
+    rows = conn.execute(sql, params).fetchall()
+
+    results = []
+    for r in rows:
+        paths = [
+            row[0]
+            for row in conn.execute(
+                "SELECT source_path FROM kb_insight_source WHERE memory_id = ? ORDER BY source_path",
+                (r["memory_id"],),
+            ).fetchall()
+        ]
+        results.append({
+            "insight": r["insight"],
+            "question": r["question"],
+            "source_paths": paths,
+            "created_at": r["created_at"],
+        })
+    return results
 
 
-def _count_total(*, source: str | None, question: str | None) -> int:
-    conn = get_connection(db_path(), with_vec=True)
-    init_db(conn)
-    try:
-        where, params = _build_where(source=source, question=question)
-        row = conn.execute(
-            f"SELECT COUNT(*) FROM kb_insight i JOIN memory_meta m ON m.memory_id = i.memory_id "
-            f"WHERE m.status = 'active' {where}",
-            params,
-        ).fetchone()
-        return int(row[0])
-    finally:
-        conn.close()
+def _count_total(
+    conn: sqlite3.Connection,
+    *,
+    source: str | None,
+    question: str | None,
+) -> int:
+    base_sql = """
+        SELECT COUNT(*) FROM kb_insight i
+        JOIN memory_meta m ON m.memory_id = i.memory_id
+        WHERE m.status = 'active'
+    """
+    clauses, params = _build_filters(source=source, question=question)
+    row = conn.execute(f"{base_sql} {clauses}", params).fetchone()
+    return int(row[0])
 
 
-def _build_where(*, source: str | None, question: str | None) -> tuple[str, list]:
+def _build_filters(*, source: str | None, question: str | None) -> tuple[str, list]:
     clauses: list[str] = []
     params: list = []
     if source:
-        clauses.append("AND i.source_path LIKE ?")
+        clauses.append(
+            "AND i.memory_id IN (SELECT memory_id FROM kb_insight_source WHERE source_path LIKE ?)"
+        )
         params.append(f"%{source}%")
     if question:
         clauses.append("AND i.question LIKE ?")

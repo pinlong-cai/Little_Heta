@@ -227,10 +227,11 @@ def _exec_query_kb(question: str, config: HetaConfig, top_k: int, base_dir: Path
     state.used_kb = True
     state.agent_steps.append("query_kb")
 
-    if _kb_has_info(kb_result.answer) and kb_result.sources:
+    if _kb_has_info(kb_result.answer) and kb_result.insights:
         try:
             state.written_back = remember_kb_insights(
                 question=question,
+                insights=kb_result.insights,
                 sources=kb_result.sources,
                 config=config,
                 base_dir=base_dir,

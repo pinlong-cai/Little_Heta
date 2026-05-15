@@ -99,6 +99,15 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_kb_insight_source ON kb_insight(source_path);
         CREATE INDEX IF NOT EXISTS idx_kb_insight_wiki   ON kb_insight(wiki_id);
+
+        CREATE TABLE IF NOT EXISTS kb_insight_source (
+            memory_id   TEXT NOT NULL REFERENCES kb_insight(memory_id) ON DELETE CASCADE,
+            source_path TEXT NOT NULL,
+            PRIMARY KEY (memory_id, source_path)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_kb_insight_source_path
+            ON kb_insight_source(source_path);
     """)
     _migrate(conn)
     _ensure_vec_table(conn)
@@ -124,6 +133,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE l1_episodic ADD COLUMN when_resolved TEXT")
     if "when_precision" not in l1_cols:
         conn.execute("ALTER TABLE l1_episodic ADD COLUMN when_precision TEXT")
+
+    # Backfill kb_insight_source from kb_insight.source_path for pre-existing rows.
+    # Idempotent: PRIMARY KEY (memory_id, source_path) prevents duplicates on rerun.
+    try:
+        conn.execute("""
+            INSERT OR IGNORE INTO kb_insight_source (memory_id, source_path)
+            SELECT memory_id, source_path FROM kb_insight
+            WHERE source_path IS NOT NULL AND source_path != ''
+        """)
+    except Exception:
+        pass
 
     # legacy tables from earlier design — kept so existing DBs don't break
     if "kb_source" not in tables:

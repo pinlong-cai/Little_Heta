@@ -28,7 +28,10 @@ def _now() -> int:
     return int(time.time())
 
 
-def _insert_insight(conn, source_path: str, insight_text: str = "fact") -> str:
+def _insert_insight(conn, source_paths, insight_text: str = "fact") -> str:
+    """source_paths can be a single str (for backward-compat tests) or a list."""
+    if isinstance(source_paths, str):
+        source_paths = [source_paths]
     mid = str(uuid.uuid4())
     insert_meta(conn, MemoryMeta(
         memory_id=mid, memory_type="kb_insight", session_id=None,
@@ -36,7 +39,7 @@ def _insert_insight(conn, source_path: str, insight_text: str = "fact") -> str:
     ))
     insert_kb_insight(conn, KBInsight(
         memory_id=mid, insight=insight_text, question="q",
-        source_path=source_path, wiki_id=None, heading_path=None,
+        source_paths=source_paths, wiki_id=None, heading_path=None,
         created_at=_now(),
     ))
     # 1024-dim float embedding (matches EMBEDDING_DIM)
@@ -103,6 +106,21 @@ def test_delete_all_clears_everything(conn):
 
 def test_delete_all_on_empty_db_returns_zero(conn):
     assert delete_all_insights(conn) == 0
+
+
+def test_delete_by_paths_invalidates_multi_source_insight(conn):
+    """An insight derived from multiple pages dies when ANY of its sources changes."""
+    multi = _insert_insight(conn, ["pages/1-foo.md", "pages/2-bar.md"])
+    solo = _insert_insight(conn, ["pages/3-baz.md"])
+
+    deleted = delete_insights_by_paths(conn, ["pages/2-bar.md"])
+
+    assert deleted == 1
+    remaining = [r[0] for r in conn.execute("SELECT memory_id FROM kb_insight").fetchall()]
+    assert multi not in remaining
+    assert solo in remaining
+    # both rows in kb_insight_source for the multi insight should be gone
+    assert _count(conn, "kb_insight_source") == 1
 
 
 def test_delete_by_paths_preserves_other_memory_types(conn):

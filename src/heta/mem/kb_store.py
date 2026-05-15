@@ -10,6 +10,7 @@ from heta.mem.models import KBInsight
 
 
 def insert_kb_insight(conn: sqlite3.Connection, insight: KBInsight) -> None:
+    """Insert insight row plus one row per source_path into the join table."""
     conn.execute(
         """INSERT INTO kb_insight
                (memory_id, insight, question, source_path, wiki_id, heading_path, created_at)
@@ -17,6 +18,11 @@ def insert_kb_insight(conn: sqlite3.Connection, insight: KBInsight) -> None:
         (insight.memory_id, insight.insight, insight.question, insight.source_path,
          insight.wiki_id, insight.heading_path, insight.created_at),
     )
+    for path in insight.source_paths:
+        conn.execute(
+            "INSERT OR IGNORE INTO kb_insight_source (memory_id, source_path) VALUES (?, ?)",
+            (insight.memory_id, path),
+        )
 
 
 def insert_insight_embedding(
@@ -26,6 +32,14 @@ def insert_insight_embedding(
         "INSERT INTO kb_insight_vec (memory_id, embedding) VALUES (?, ?)",
         (memory_id, sqlite_vec.serialize_float32(embedding)),
     )
+
+
+def get_source_paths(conn: sqlite3.Connection, memory_id: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT source_path FROM kb_insight_source WHERE memory_id = ? ORDER BY source_path",
+        (memory_id,),
+    ).fetchall()
+    return [r[0] for r in rows]
 
 
 def search_kb_insights(
@@ -43,12 +57,14 @@ def search_kb_insights(
            ORDER BY v.distance""",
         (sqlite_vec.serialize_float32(embedding), top_k),
     ).fetchall()
-    return [
-        {
-            "memory_id": r["memory_id"],
+    results = []
+    for r in rows:
+        mid = r["memory_id"]
+        results.append({
+            "memory_id": mid,
             "insight": r["insight"],
             "source_path": r["source_path"],
+            "source_paths": get_source_paths(conn, mid),
             "score": 1.0 / (1.0 + float(r["distance"])),
-        }
-        for r in rows
-    ]
+        })
+    return results

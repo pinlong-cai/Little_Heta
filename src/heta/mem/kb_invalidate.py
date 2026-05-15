@@ -61,14 +61,17 @@ def invalidate_all() -> int:
 
 
 def delete_insights_by_paths(conn: sqlite3.Connection, paths: list[str]) -> int:
-    """Connection-level helper. Exposed for tests and callers with an open conn."""
+    """Connection-level helper. Exposed for tests and callers with an open conn.
+
+    An insight is invalidated if ANY of its source_paths matches a changed page.
+    """
     if not paths:
         return 0
     placeholders = ",".join("?" for _ in paths)
     ids = [
         r[0]
         for r in conn.execute(
-            f"SELECT memory_id FROM kb_insight WHERE source_path IN ({placeholders})",
+            f"SELECT DISTINCT memory_id FROM kb_insight_source WHERE source_path IN ({placeholders})",
             paths,
         ).fetchall()
     ]
@@ -77,7 +80,8 @@ def delete_insights_by_paths(conn: sqlite3.Connection, paths: list[str]) -> int:
     id_placeholders = ",".join("?" for _ in ids)
     # vec0 virtual table does not honour FK cascade; delete explicitly.
     conn.execute(f"DELETE FROM kb_insight_vec WHERE memory_id IN ({id_placeholders})", ids)
-    # memory_meta delete cascades to kb_insight via ON DELETE CASCADE.
+    # memory_meta delete cascades to kb_insight via ON DELETE CASCADE,
+    # which in turn cascades to kb_insight_source.
     conn.execute(f"DELETE FROM memory_meta WHERE memory_id IN ({id_placeholders})", ids)
     conn.commit()
     return len(ids)

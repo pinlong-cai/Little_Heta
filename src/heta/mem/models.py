@@ -74,9 +74,14 @@ class L2Semantic:
 @dataclass
 class KBInsight:
     memory_id: str
-    insight: str        # distilled knowledge point
-    source_path: str    # KB page this was extracted from
+    insight: str                       # distilled knowledge point
+    source_paths: list[str]            # all KB pages this insight derives from
     created_at: int
     question: str | None = None
-    wiki_id: int | None = None
-    heading_path: str | None = None
+    wiki_id: int | None = None         # primary wiki id (from first source)
+    heading_path: str | None = None    # primary heading (from first source)
+
+    @property
+    def source_path(self) -> str:
+        """Primary source path — kept for the legacy column / display."""
+        return self.source_paths[0] if self.source_paths else ""

@@ -94,40 +94,41 @@ Answer format (when sufficient):
 - Do NOT include a Sources or References section.
 """
 
-KB_INSIGHT_EXTRACTION_PROMPT = """\
-You are a knowledge distillation engine. Given a user question and a KB page, extract concise, reusable insights from the page that are directly useful for answering the question.
-
-Process:
-1. Reason step by step: which parts of the KB content are relevant to the question?
-2. Distill those parts into self-contained insight statements.
-3. Output ONLY the final JSON — no other text.
-
-Schema:
-{"insights": ["insight 1", "insight 2", ...]}
-
-Rules:
-- Each insight must be self-contained and understandable without the original page.
-- Only include insights relevant to the question — filter out unrelated content.
-- LANGUAGE RULE: write insights in the SAME language as the question.
-- Aim for 3–8 insights. Do not pad with trivial or redundant statements.
-- If the page contains nothing relevant, return {"insights": []}.
-"""
-
 INSIGHT_DEDUP_PROMPT = """\
-You are a memory deduplication judge.
+You are a memory deduplication judge for a retrieval cache of factual insights.
 
 Given a NEW insight and a list of EXISTING similar insights already stored in memory,
-decide whether the new insight is already fully covered and would be redundant to store.
+decide whether the new insight should be skipped as redundant.
 
-Return STRICT JSON only. No markdown, no extra text.
+Return STRICT JSON only — no markdown, no commentary.
 Schema: {"duplicate": true}  OR  {"duplicate": false}
 
-Rules:
-- Return {"duplicate": true} ONLY if an existing insight conveys the same fact or knowledge
-  as the new insight. A paraphrase of the same fact counts as duplicate.
-- Return {"duplicate": false} if the new insight adds ANY information not present in the
-  existing ones, even if they are thematically related.
-- When in doubt, return {"duplicate": false} — prefer storing over silently dropping.
+Decision rule:
+A new insight is REDUNDANT (duplicate=true) if every factual element it
+asserts — every entity, relationship, attribute, time, and place — is
+already covered by the COMBINATION of existing insights. The new insight
+does not need to be a paraphrase of any single existing one; what matters
+is whether any genuinely new fact is being introduced.
+
+A new insight is WORTH KEEPING (duplicate=false) if it introduces at least
+one factual element not expressed by the existing set.
+
+Examples:
+- NEW: "Martha Mattie 是 MJ 的祖母，青年时期生活在 Russell County"
+  EXISTING: ["Martha Mattie 是 MJ 的祖母",
+             "Martha Mattie 青年时期生活在 Russell County"]
+  → {"duplicate": true}   (every fact already covered by the combination)
+
+- NEW: "Martha Mattie 是 MJ 的祖母，她的丈夫名叫 Samuel"
+  EXISTING: ["Martha Mattie 是 MJ 的祖母"]
+  → {"duplicate": false}  (introduces "Samuel as husband" — a new fact)
+
+- NEW: "John Doe 是诗人"
+  EXISTING: ["John Doe 是 20 世纪初居住在 Russell County 的诗人"]
+  → {"duplicate": true}   (the existing insight already covers "John Doe 是诗人")
+
+When in doubt, return {"duplicate": false} — information loss is harder
+to recover than slight redundancy.
 """
 
 CONFLICT_JUDGE_PROMPT = """\

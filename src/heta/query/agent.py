@@ -11,7 +11,7 @@ from typing import Any
 
 from heta.config.schema import HetaConfig
 from heta.kb.agent import AgentStats, _chat_completion, _get_client
-from heta.query.models import QueryResult, QuerySource, VectorMatch
+from heta.query.models import QueryInsight, QueryResult, QuerySource, VectorMatch
 from heta.query.tools import (
     format_vector_matches,
     read_index,
@@ -84,6 +84,7 @@ RAW_SNIPPET_MAX_CHARS = 16000
 class FinalAnswer:
     answer: str
     sources: list[QuerySource]
+    insights: list[QueryInsight]
     valid_json: bool = True
 
 
@@ -148,7 +149,8 @@ def run_query_agent(
                         "role": "user",
                         "content": (
                             "Your previous response was not valid JSON. Return exactly one valid JSON object now, "
-                            "with keys answer and used_sources. Do not include Markdown fences or text outside JSON."
+                            "with keys insights, answer, and used_sources. Do not include Markdown fences or text "
+                            "outside JSON."
                         ),
                     }
                 )
@@ -158,6 +160,7 @@ def run_query_agent(
             return QueryResult(
                 answer=final_answer.answer,
                 sources=final_answer.sources,
+                insights=final_answer.insights,
                 usage=stats.finish("completed"),
             )
 
@@ -203,6 +206,7 @@ def run_query_agent(
     return QueryResult(
         answer=final_answer.answer,
         sources=final_answer.sources,
+        insights=final_answer.insights,
         usage=stats.finish("stopped at limit"),
     )
 
@@ -218,22 +222,57 @@ def _system_prompt(vector_enabled: bool) -> str:
 Answer the user's question using the Little Heta wiki. You can inspect the wiki,
 but you must not create, edit, delete, rename, or commit anything.
 
-Rules:
+Reading rules:
 - Treat index.md as the global map of pages, ids, paths, and summaries.
 - Treat semantic matches as starting evidence, not final truth.
 - If a chunk is relevant but incomplete, call read_page(path) for the full page.
 - You may call read_raw(path) only for original raw files referenced by wiki pages.
-  Raw files help inspect details, but raw files must never appear in used_sources.
+  Raw files help inspect details, but raw files must never appear in used_sources or
+  insight source_paths.
 - Follow useful [[Wiki Links]] by reading the linked pages when the index gives their paths.
 {vector_rule}
 - Stop reading when the context is enough.
-- If the wiki does not contain enough evidence, say what is missing.
-- Your final response must be exactly one valid JSON object, with no Markdown fence:
-  {{"answer": "Markdown answer text", "used_sources": [{{"path": "pages/example.md", "heading_path": "Content > Section"}}]}}
-- In used_sources, include only evidence you actually used. You may cite a semantic
-  match directly when its chunk is sufficient; use its exact path and heading.
-- Do not include a Sources, References, or Citations section in answer.
-  The CLI renders validated sources separately.
+
+Output protocol — distill, then answer:
+1. After gathering evidence, emit a list of `insights`: short, self-contained
+   factual claims distilled from the pages you read, each tagged with the
+   wiki page(s) it derives from. Insights are what the answer must rest on.
+2. Compose the `answer` using ONLY facts that are present in your `insights`.
+   If a sentence in the answer needs a fact not yet represented in any
+   insight, you must add that fact as an insight first.
+3. If the wiki does not contain enough evidence, return an empty insights
+   list and say in the answer what is missing.
+
+What makes a GOOD insight:
+- ONE self-contained factual claim per insight. A claim may be compound
+  (multiple linked entities in one sentence) as long as it asserts a single
+  coherent fact — but never bundle two independent claims.
+- Embed named entities (people, places, dates, organisations) directly in
+  the text. No pronouns, no "this", no "the above".
+- A reader with no other context must understand exactly what is asserted.
+- Only facts explicitly stated in the wiki — no inference, no speculation.
+
+source_paths rules:
+- Each insight's source_paths lists the wiki page(s) that the insight
+  derives from. Use the exact page paths (e.g. "pages/12-foo.md").
+- A cross-page synthesis may list multiple paths.
+- Every path in source_paths must be a page you actually read or that
+  appeared in semantic matches.
+
+Output format — exactly one valid JSON object, no Markdown fences:
+{{
+  "insights": [
+    {{"text": "self-contained factual claim", "source_paths": ["pages/example.md"]}}
+  ],
+  "answer": "Markdown answer text, derived from the insights above",
+  "used_sources": [{{"path": "pages/example.md", "heading_path": "Section"}}]
+}}
+
+- insights: emit as many as the question requires; no minimum, no maximum.
+  Return [] if no evidence supports an answer.
+- used_sources: include only pages you actually relied on (same as the union
+  of insight source_paths).
+- Do not include a Sources, References, or Citations section inside answer.
 """
 
 
@@ -310,17 +349,23 @@ def _parse_final_answer(
 ) -> FinalAnswer:
     data = _extract_json_object(text)
     if data is None:
-        return FinalAnswer(answer=text, sources=[], valid_json=False)
+        return FinalAnswer(answer=text, sources=[], insights=[], valid_json=False)
 
     answer = data.get("answer")
     used_sources = data.get("used_sources")
+    raw_insights = data.get("insights")
     if not isinstance(answer, str):
         answer = text
     if not isinstance(used_sources, list):
         used_sources = []
+    if not isinstance(raw_insights, list):
+        raw_insights = []
 
     sources: dict[str, QuerySource] = {}
     normalized_read_paths = {_normalize_candidate_path(path) for path in read_paths}
+    valid_paths = set(normalized_read_paths)
+    valid_paths.update(path for path, _ in vector_matches.keys())
+
     for source in used_sources:
         if not isinstance(source, dict):
             continue
@@ -342,7 +387,41 @@ def _parse_final_answer(
         else:
             continue
         sources[f"{path}#{display_heading or ''}"] = source_from_page_path(path, base_dir, heading_path=display_heading)
-    return FinalAnswer(answer=answer, sources=list(sources.values()))
+
+    insights = _validate_insights(raw_insights, valid_paths=valid_paths)
+    return FinalAnswer(answer=answer, sources=list(sources.values()), insights=insights)
+
+
+def _validate_insights(
+    raw_insights: list,
+    *,
+    valid_paths: set[str],
+) -> list[QueryInsight]:
+    """Validate each insight: keep ones with non-empty text and at least one valid source_path."""
+    out: list[QueryInsight] = []
+    for item in raw_insights:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        raw_paths = item.get("source_paths")
+        if not isinstance(raw_paths, list):
+            continue
+        validated_paths: list[str] = []
+        for p in raw_paths:
+            if not isinstance(p, str):
+                continue
+            try:
+                norm = _normalize_candidate_path(p)
+            except ValueError:
+                continue
+            if norm in valid_paths:
+                validated_paths.append(norm)
+        if not validated_paths:
+            continue
+        out.append(QueryInsight(text=text.strip(), source_paths=validated_paths))
+    return out
 
 
 def _normalize_candidate_path(path: str) -> str:

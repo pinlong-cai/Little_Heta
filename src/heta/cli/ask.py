@@ -59,6 +59,11 @@ def ask_command(
             console.print("\n[bold]kb result:[/bold]")
             paths = [s.path for s in result.kb_result.sources]
             console.print(f"  used sources: {paths or '(empty)'}")
+            if result.kb_result.insights:
+                console.print(f"  agent insights ({len(result.kb_result.insights)}):")
+                for i, qi in enumerate(result.kb_result.insights, 1):
+                    console.print(f"    [dim][{i}] sources:[/dim] {qi.source_paths}")
+                    console.print(f"        {qi.text}")
             console.print(f"  written_back: {result.written_back}")
         console.print("[bold yellow]──────────[/bold yellow]\n")
 

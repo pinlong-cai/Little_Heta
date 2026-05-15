@@ -25,8 +25,16 @@ class QuerySource:
 
 
 @dataclass(frozen=True)
+class QueryInsight:
+    """A distilled knowledge nugget emitted by the KB agent alongside its answer."""
+    text: str
+    source_paths: list[str]
+
+
+@dataclass(frozen=True)
 class QueryResult:
     answer: str
     sources: list[QuerySource] = field(default_factory=list)
+    insights: list[QueryInsight] = field(default_factory=list)
     usage: dict | None = None
 
