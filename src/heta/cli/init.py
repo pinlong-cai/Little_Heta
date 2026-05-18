@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 
+from heta.assistants import install_assistant_skills, skill_template_hint
 from heta.cli.branding import APP_TAGLINE, HETA, MUTED, OK, WARN, brand_line
 from heta.config.io import CONFIG_PATH, save_config
 from heta.config.schema import HetaConfig, InsertPlanningConfig, LLMConfig, MinerUConfig, VectorIndexConfig
@@ -71,6 +72,7 @@ def _run_interactive_init() -> None:
     save_config(final_config)
 
     console.print(f"[{OK}]✓[/] little heta is ready")
+    _install_assistant_skills()
     _show_summary(final_config)
 
 
@@ -270,6 +272,21 @@ def _retry_value(
     if exit_on_exhausted:
         raise typer.Exit(1)
     raise _RetryExhausted
+
+
+def _install_assistant_skills() -> None:
+    """Install the Little Heta skill into supported AI coding assistants."""
+    try:
+        installed = install_assistant_skills()
+    except Exception as exc:
+        console.print(f"[{WARN}]?[/] Could not install assistant skills: {exc}")
+        return
+
+    console.print()
+    console.print(f"[{OK}]✓[/] assistant skills installed")
+    for item in installed:
+        console.print(f"  [{MUTED}]{item.assistant}:[/] {_short_path(item.path)}")
+    console.print(f"  [{MUTED}]Other agents:[/] {skill_template_hint()}.")
 
 
 def _show_summary(config: HetaConfig) -> None:
