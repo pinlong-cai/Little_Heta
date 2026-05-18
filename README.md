@@ -115,6 +115,13 @@ all pile up together. A normal agent can read those files directly, but every
 question pays the same cost again: open the index, guess which page matters,
 read long pages, and spend tokens rediscovering context it already found before.
 
+Little Heta separates the external knowledge base from the agent's internal
+memory. The KB remains the source of truth: a structured, versioned wiki built
+from the user's files. Memory, by contrast, is the agent's persistent working
+layer, storing reusable information that helps the agent reason, route, and
+avoid repeated deep retrieval. This creates a memory-first, KB-grounded
+retrieval loop.
+
 Little Heta turns that pile into a persistent agent workspace:
 
 - **Wiki foundation**: raw files are compiled into stable Markdown pages with
@@ -130,6 +137,18 @@ Little Heta turns that pile into a persistent agent workspace:
   stale cached insights from drifting away from the source of truth.
 - **Agent reuse**: larger teams and multi-agent workflows benefit because useful
   KB discoveries can be reused across later questions, sessions, and agents.
+
+Heta's memory architecture stores four complementary types of information:
+
+- **Raw dialogue memory**: original user-agent interaction history, preserving
+  full context and wording.
+- **Atomic fact memory**: compact factual statements extracted from
+  interactions, useful for precise attribute or preference recall.
+- **Episodic memory**: event-level summaries that capture tasks, decisions,
+  temporal context, and multi-step work sessions.
+- **KB insight memory**: distilled insights produced after KB retrieval,
+  storing what the agent learned from external documents so future questions
+  can reuse that understanding without repeating the same expensive traversal.
 
 Retrieval quality depends heavily on corpus structure. In corpora where
 important details are buried deep inside long wiki pages and poorly represented
