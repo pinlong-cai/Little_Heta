@@ -3,6 +3,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 .venv/
 dist/
 build/
@@ -11,3 +14,34 @@ workspace/
 output/
 .codex/
 .agents/
+
+# Local secrets/configuration
+.env
+.env.*
+!.env.example
+
+# Runtime data and generated indexes
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+
+# Logs and temporary run output
+*.log
+*.out
+*.tmp
+*.bak
+
+# Large local artifacts
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+
+# Local staging and evaluation artifacts
+staging/
+
+# Local generated previews
+docs/*preview*.html

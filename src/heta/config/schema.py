@@ -5,24 +5,132 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-LLMProvider = Literal["qwen", "chatgpt", "gemini"]
+LLMProvider = Literal["qwen", "chatgpt", "gemini", "custom"]
 MinerUProvider = Literal["cloud", "local"]
+
+DEFAULT_LLM_PROFILES: dict[str, dict[str, str | None]] = {
+    "qwen": {
+        "chat_model": "qwen3.5-flash",
+        "chat_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "multimodal_model": "qwen3.5-omni-flash",
+        "multimodal_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "embedding_model": "text-embedding-v4",
+        "embedding_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    },
+    "chatgpt": {
+        "chat_model": "gpt-5.4-nano",
+        "chat_base_url": None,
+        "multimodal_model": "gpt-5.4-nano",
+        "multimodal_base_url": None,
+        "embedding_model": "text-embedding-3-small",
+        "embedding_base_url": None,
+    },
+    "gemini": {
+        "chat_model": "gemini-2.5-flash",
+        "chat_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "multimodal_model": "gemini-2.5-flash",
+        "multimodal_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "embedding_model": "text-embedding-004",
+        "embedding_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    },
+}
 
 
 @dataclass(frozen=True)
 class LLMConfig:
     provider: LLMProvider
     api_key: str
+    chat_api_key: str | None = None
+    chat_model: str | None = None
+    chat_base_url: str | None = None
+    chat_extra_body: dict[str, Any] | None = None
+    multimodal_api_key: str | None = None
+    multimodal_model: str | None = None
+    multimodal_base_url: str | None = None
+    embedding_api_key: str | None = None
+    embedding_model: str | None = None
+    embedding_base_url: str | None = None
+    audio_api_key: str | None = None
+    audio_model: str | None = None
+    audio_base_url: str | None = None
+
+    def __post_init__(self) -> None:
+        defaults = DEFAULT_LLM_PROFILES.get(self.provider, {})
+        for field in (
+            "chat_api_key",
+            "chat_model",
+            "chat_base_url",
+            "multimodal_api_key",
+            "multimodal_model",
+            "multimodal_base_url",
+            "embedding_api_key",
+            "embedding_model",
+            "embedding_base_url",
+            "audio_api_key",
+            "audio_model",
+            "audio_base_url",
+        ):
+            if getattr(self, field) is None and field in defaults:
+                object.__setattr__(self, field, defaults[field])
+        if self.provider != "custom":
+            if self.chat_api_key is None:
+                object.__setattr__(self, "chat_api_key", self.api_key)
+            if self.multimodal_api_key is None:
+                object.__setattr__(self, "multimodal_api_key", self.api_key)
+            if self.embedding_api_key is None:
+                object.__setattr__(self, "embedding_api_key", self.api_key)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "LLMConfig":
         provider = data.get("provider")
         api_key = data.get("api_key")
-        if provider not in {"qwen", "chatgpt", "gemini"}:
+        if provider not in {"qwen", "chatgpt", "gemini", "custom"}:
             raise ValueError("Invalid LLM provider in config.")
         if not isinstance(api_key, str) or not api_key.strip():
             raise ValueError("Invalid LLM api_key in config.")
-        return cls(provider=provider, api_key=api_key)
+
+        defaults = DEFAULT_LLM_PROFILES.get(provider, {})
+        values: dict[str, str | None] = {}
+        for field in (
+            "chat_api_key",
+            "chat_model",
+            "chat_base_url",
+            "multimodal_api_key",
+            "multimodal_model",
+            "multimodal_base_url",
+            "embedding_api_key",
+            "embedding_model",
+            "embedding_base_url",
+            "audio_api_key",
+            "audio_model",
+            "audio_base_url",
+        ):
+            raw = data.get(field, defaults.get(field))
+            if raw is not None and not isinstance(raw, str):
+                raise ValueError(f"Invalid LLM {field} in config.")
+            values[field] = raw.strip() if isinstance(raw, str) and raw.strip() else None
+
+        chat_extra_body = data.get("chat_extra_body")
+        if chat_extra_body is not None and not isinstance(chat_extra_body, dict):
+            raise ValueError("Invalid LLM chat_extra_body in config.")
+
+        if provider == "custom":
+            missing = [
+                field
+                for field in (
+                    "chat_api_key",
+                    "chat_model",
+                    "chat_base_url",
+                    "embedding_api_key",
+                    "embedding_model",
+                    "embedding_base_url",
+                )
+                if values[field] is None
+            ]
+            if missing:
+                raise ValueError(f"Custom LLM config requires: {', '.join(missing)}.")
+
+        return cls(provider=provider, api_key=api_key.strip(), chat_extra_body=chat_extra_body, **values)
 
 
 @dataclass(frozen=True)

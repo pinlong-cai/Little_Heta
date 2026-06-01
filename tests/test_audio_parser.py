@@ -1,7 +1,8 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from heta.config.schema import HetaConfig, InsertPlanningConfig, LLMConfig, MinerUConfig, VectorIndexConfig
-from heta.kb.audio_parser import build_audio_markdown
+from heta.kb.audio_parser import build_audio_markdown, transcribe_media
 from heta.kb.parser import parse_document
 from heta.kb.text import extract_title
 
@@ -10,6 +11,57 @@ def _config() -> HetaConfig:
     return HetaConfig(
         version=1,
         llm=LLMConfig(provider="qwen", api_key="sk-test"),
+        mineru=MinerUConfig.disabled(),
+        vector_index=VectorIndexConfig(enable=False),
+        insert_planning=InsertPlanningConfig.enabled(),
+    )
+
+
+def _chatgpt_config() -> HetaConfig:
+    return HetaConfig(
+        version=1,
+        llm=LLMConfig(provider="chatgpt", api_key="sk-test"),
+        mineru=MinerUConfig.disabled(),
+        vector_index=VectorIndexConfig(enable=False),
+        insert_planning=InsertPlanningConfig.enabled(),
+    )
+
+
+def _custom_without_multimodal_config() -> HetaConfig:
+    return HetaConfig(
+        version=1,
+        llm=LLMConfig(
+            provider="custom",
+            api_key="sk-test",
+            chat_api_key="sk-chat",
+            chat_model="chat-model",
+            chat_base_url="http://chat.local/v1",
+            embedding_api_key="sk-embedding",
+            embedding_model="embedding-model",
+            embedding_base_url="http://embedding.local/v1",
+        ),
+        mineru=MinerUConfig.disabled(),
+        vector_index=VectorIndexConfig(enable=False),
+        insert_planning=InsertPlanningConfig.enabled(),
+    )
+
+
+def _custom_with_audio_config() -> HetaConfig:
+    return HetaConfig(
+        version=1,
+        llm=LLMConfig(
+            provider="custom",
+            api_key="sk-test",
+            chat_api_key="sk-chat",
+            chat_model="chat-model",
+            chat_base_url="http://chat.local/v1",
+            embedding_api_key="sk-embedding",
+            embedding_model="embedding-model",
+            embedding_base_url="http://embedding.local/v1",
+            audio_api_key="sk-audio",
+            audio_model="audio-model",
+            audio_base_url="http://audio.local/v1",
+        ),
         mineru=MinerUConfig.disabled(),
         vector_index=VectorIndexConfig(enable=False),
         insert_planning=InsertPlanningConfig.enabled(),
@@ -35,6 +87,59 @@ def test_build_audio_markdown_uses_compact_retrieval_sections() -> None:
     assert "### Interpretation and Keywords" in markdown
     assert "## Related Pages" in markdown
     assert "## Source" in markdown
+
+
+def test_chatgpt_audio_transcribes_then_structures_transcript(monkeypatch, tmp_path: Path) -> None:
+    audio = tmp_path / "meeting.mp3"
+    audio.write_bytes(b"mp3 bytes")
+    seen: dict[str, object] = {}
+
+    class FakeTranscriptions:
+        @staticmethod
+        def create(**kwargs):
+            seen["transcription"] = kwargs
+            return "Speaker: hello."
+
+    class FakeOpenAIClient:
+        audio = SimpleNamespace(transcriptions=FakeTranscriptions())
+
+    class FakeOpenAIFactory:
+        def __init__(self, **kwargs):
+            seen["openai_kwargs"] = kwargs
+
+        audio = FakeOpenAIClient.audio
+
+    chat_client = object()
+    monkeypatch.setattr("heta.kb.audio_parser.OpenAI", FakeOpenAIFactory)
+    monkeypatch.setattr("heta.kb.audio_parser._get_client", lambda config: (chat_client, "gpt-chat"))
+
+    def fake_chat_completion(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            '{"summary":"A meeting.","transcript":"Speaker: hello.",'
+                            '"key_points_metadata":"Language: English.",'
+                            '"interpretation_keywords":"meeting, test"}'
+                        )
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr("heta.kb.audio_parser._chat_completion", fake_chat_completion)
+
+    result = transcribe_media(source_path=audio, config=_chatgpt_config())
+
+    assert result["summary"] == "A meeting."
+    assert seen["openai_kwargs"]["api_key"] == "sk-test"
+    assert seen["transcription"]["model"] == "gpt-4o-transcribe"
+    assert seen["transcription"]["response_format"] == "text"
+    assert seen["client"] is chat_client
+    assert seen["model"] == "gpt-chat"
+    assert "Speaker: hello." in seen["messages"][1]["content"]
 
 
 def test_build_audio_markdown_supports_video_link_label() -> None:
@@ -78,3 +183,56 @@ def test_parse_document_accepts_audio_branch(monkeypatch, tmp_path: Path) -> Non
     assert document.source_name == "raw_meeting.mp3"
     assert document.metadata["extension"] == ".mp3"
     assert "### Transcript" in document.markdown_content
+
+
+def test_audio_is_disabled_for_custom_without_audio_adapter(tmp_path: Path) -> None:
+    source = tmp_path / "meeting.mp3"
+    source.write_bytes(b"mp3")
+
+    try:
+        parse_document(source, source, _custom_without_multimodal_config())
+    except ValueError as exc:
+        assert "Audio/video parsing is not enabled for custom providers" in str(exc)
+        assert "audio APIs vary by vendor" in str(exc)
+    else:
+        raise AssertionError("audio parsing should require multimodal config")
+
+
+def test_custom_audio_uses_audio_adapter(monkeypatch, tmp_path: Path) -> None:
+    audio = tmp_path / "meeting.mp3"
+    audio.write_bytes(b"mp3 bytes")
+    seen: dict[str, object] = {}
+
+    class FakeChatCompletions:
+        @staticmethod
+        def create(**kwargs):
+            seen["request"] = kwargs
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=(
+                                '{"summary":"A meeting.","transcript":"Speaker: hello.",'
+                                '"key_points_metadata":"Language: English.",'
+                                '"interpretation_keywords":"meeting, test"}'
+                            )
+                        )
+                    )
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            seen["client_kwargs"] = kwargs
+            self.chat = SimpleNamespace(completions=FakeChatCompletions())
+
+    monkeypatch.setattr("heta.kb.audio_parser.OpenAI", FakeOpenAI)
+
+    result = transcribe_media(source_path=audio, config=_custom_with_audio_config())
+
+    assert result["summary"] == "A meeting."
+    assert seen["client_kwargs"]["api_key"] == "sk-audio"
+    assert seen["client_kwargs"]["base_url"] == "http://audio.local/v1"
+    assert seen["request"]["model"] == "audio-model"
+    content = seen["request"]["messages"][0]["content"]
+    assert content[1]["type"] == "input_audio"

@@ -17,13 +17,20 @@ from rich.table import Table
 from heta.assistants import install_assistant_skills, skill_template_hint
 from heta.cli.branding import APP_TAGLINE, HETA, MUTED, OK, WARN, brand_line
 from heta.config.io import CONFIG_PATH, save_config
-from heta.config.schema import HetaConfig, InsertPlanningConfig, LLMConfig, MinerUConfig, VectorIndexConfig
+from heta.config.schema import (
+    DEFAULT_LLM_PROFILES,
+    HetaConfig,
+    InsertPlanningConfig,
+    LLMConfig,
+    MinerUConfig,
+    VectorIndexConfig,
+)
 from heta.providers.llm import validate_llm
 from heta.providers.mineru import validate_mineru_cloud, validate_mineru_local
 
 console = Console()
 
-LLM_PROVIDERS = {1: "qwen", 2: "chatgpt", 3: "gemini"}
+LLM_PROVIDERS = {1: "qwen", 2: "chatgpt", 3: "gemini", 4: "custom"}
 MINERU_OPTIONS = {1: "cloud", 2: "local", 3: "skip"}
 MAX_RETRIES = 3
 
@@ -95,12 +102,7 @@ def _show_welcome() -> None:
         )
     )
     console.print()
-    console.print(f"  [{WARN}]Tip:[/] Run this once to connect Little Heta to your providers.")
-    console.print()
-    console.print(f"  [{MUTED}]Learn more:[/] https://github.com/KnowledgeXLab/Heta")
-    console.print()
-    console.print(f"[{MUTED}]$[/] [bold {HETA}]heta init[/]")
-    console.print(f"[bold {HETA}]little heta setup[/]")
+    console.print(f"  [{MUTED}]Learn more:[/] https://github.com/KnowledgeXLab/Little_Heta")
 
 
 def _short_path(path: Path) -> str:
@@ -126,9 +128,29 @@ def _configure_llm() -> LLMConfig:
     console.print(f"  [{HETA}]1[/] qwen")
     console.print(f"  [{HETA}]2[/] chatgpt")
     console.print(f"  [{HETA}]3[/] gemini")
+    console.print(f"  [{HETA}]4[/] custom")
 
     choice = _ask_choice("  Provider", LLM_PROVIDERS)
     provider = LLM_PROVIDERS[choice]
+
+    if provider == "custom":
+        _show_custom_provider_note()
+        chat = _configure_custom_capability("Chat", required=True)
+        multimodal = _configure_custom_capability("Multimodal", required=False)
+        embedding = _configure_custom_capability("Embedding", required=True)
+        return LLMConfig(
+            provider="custom",
+            api_key=chat["api_key"] or embedding["api_key"] or "",
+            chat_api_key=chat["api_key"],
+            chat_model=chat["model"],
+            chat_base_url=chat["base_url"],
+            multimodal_api_key=multimodal["api_key"],
+            multimodal_model=multimodal["model"],
+            multimodal_base_url=multimodal["base_url"],
+            embedding_api_key=embedding["api_key"],
+            embedding_model=embedding["model"],
+            embedding_base_url=embedding["base_url"],
+        )
 
     api_key = _retry_secret(
         prompt="  Paste API key",
@@ -140,7 +162,8 @@ def _configure_llm() -> LLMConfig:
         ),
         exhausted_message="LLM configuration failed. Initialization aborted.",
     )
-    return LLMConfig(provider=provider, api_key=api_key)
+    defaults = DEFAULT_LLM_PROFILES[provider]
+    return LLMConfig(provider=provider, api_key=api_key, **defaults)
 
 
 def _configure_mineru() -> MinerUConfig:
@@ -191,6 +214,55 @@ def _ask_choice(label: str, choices: dict[int, str]) -> int:
         if choice in choices:
             return choice
         console.print(f"[{WARN}]?[/] Choose one of: {', '.join(map(str, choices))}")
+
+
+def _ask_required_text(prompt: str) -> str:
+    while True:
+        value = Prompt.ask(prompt).strip()
+        if value:
+            return value
+        console.print(f"[{WARN}]?[/] Value cannot be empty.")
+
+
+def _ask_optional_text(prompt: str) -> str | None:
+    value = Prompt.ask(prompt, default="").strip()
+    return value or None
+
+
+def _show_custom_provider_note() -> None:
+    console.print()
+    console.print(f"[{WARN}]?[/] Custom provider expects OpenAI-compatible APIs.")
+    console.print(f"  [{MUTED}]Chat:[/]       /chat/completions style text generation")
+    console.print(f"  [{MUTED}]Embedding:[/]  /embeddings style vectors with 1024 dimensions")
+    console.print(f"  [{MUTED}]Multimodal:[/] optional OpenAI-style image content blocks")
+
+
+def _configure_custom_capability(label: str, *, required: bool) -> dict[str, str | None]:
+    console.print()
+    console.print(f"[{WARN}]?[/] Configure custom {label.lower()} API")
+    if not required and not Confirm.ask(f"  Enable {label.lower()} API?", default=False):
+        return {"api_key": None, "model": None, "base_url": None}
+
+    while True:
+        api_key = _ask_required_secret(f"  {label} API key")
+        model = _ask_required_text(f"  {label} model")
+        base_url = _ask_required_text(f"  {label} base URL")
+        with console.status(f"Checking custom {label.lower()} API", spinner="dots"):
+            ok = validate_llm("custom", api_key, base_url)
+        if ok:
+            console.print(f"[{OK}]✓[/] {label} API reachable")
+            return {"api_key": api_key, "model": model, "base_url": base_url.rstrip("/")}
+        console.print(f"[{WARN}]?[/] Could not connect to custom {label.lower()} API.")
+        if not Confirm.ask("  Retry?", default=True):
+            raise typer.Exit(1)
+
+
+def _ask_required_secret(prompt: str) -> str:
+    while True:
+        value = Prompt.ask(prompt, password=True).strip()
+        if value:
+            return value
+        console.print(f"[{WARN}]?[/] Value cannot be empty.")
 
 
 def _retry_secret(

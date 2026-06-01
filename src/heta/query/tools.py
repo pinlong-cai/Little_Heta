@@ -7,7 +7,7 @@ from pathlib import Path
 
 from heta.config.schema import HetaConfig
 from heta.kb import paths
-from heta.kb.vector_index import search_wiki_vector_index
+from heta.kb.vector_index import search_wiki_hybrid_index
 from heta.query.models import QuerySource, VectorMatch
 
 PAGE_ID_RE = re.compile(r"^(?P<wiki_id>\d+)-.+\.md$")
@@ -63,7 +63,7 @@ def search_vector(
             content=match.content,
             score=match.score,
         )
-        for match in search_wiki_vector_index(query=query, config=config, top_k=top_k, base_dir=base_dir)
+        for match in search_wiki_hybrid_index(query=query, config=config, top_k=top_k, base_dir=base_dir)
     ]
 
 

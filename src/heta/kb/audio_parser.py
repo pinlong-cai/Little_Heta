@@ -13,12 +13,11 @@ from openai import OpenAI
 
 from heta.config.schema import HetaConfig
 from heta.kb.agent import _chat_completion, _get_client
+from heta.providers.clients import ModelClient, build_multimodal_client
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".webm", ".mp4"}
 
-QWEN_OMNI_MODEL = "qwen3.5-omni-flash"
 OPENAI_TRANSCRIBE_MODEL = "gpt-4o-transcribe"
-GEMINI_AUDIO_MODEL = "gemini-2.5-flash"
 
 _MIME_TYPES = {
     ".mp3": "audio/mp3",
@@ -57,8 +56,13 @@ def transcribe_media(*, source_path: Path, config: HetaConfig) -> dict[str, str]
         transcript = _transcribe_with_openai(source_path, config)
         return _structure_transcript(source_path=source_path, transcript=transcript, config=config)
     if config.llm.provider == "qwen":
+        _require_multimodal(config, "Audio/video parsing")
         return _transcribe_with_qwen_omni(source_path, config)
+    if config.llm.provider == "custom":
+        _require_custom_audio(config)
+        return _transcribe_with_custom_audio(source_path, config)
     if config.llm.provider == "gemini":
+        _require_multimodal(config, "Audio/video parsing")
         return _transcribe_with_gemini(source_path, config)
     raise ValueError(f"Unsupported audio provider: {config.llm.provider}")
 
@@ -133,11 +137,29 @@ def _structure_transcript(*, source_path: Path, transcript: str, config: HetaCon
 
 
 def _transcribe_with_qwen_omni(path: Path, config: HetaConfig) -> dict[str, str]:
-    client = OpenAI(
-        api_key=config.llm.api_key,
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        timeout=300,
+    return _transcribe_with_openai_compatible_multimodal(path, config, extra_body={"enable_thinking": False})
+
+
+def _transcribe_with_custom_audio(path: Path, config: HetaConfig) -> dict[str, str]:
+    resolved = ModelClient(
+        client=OpenAI(
+            api_key=config.llm.audio_api_key or "",
+            base_url=config.llm.audio_base_url,
+            timeout=300,
+        ),
+        model=config.llm.audio_model or "",
     )
+    return _transcribe_with_openai_compatible_multimodal(path, config, resolved=resolved)
+
+
+def _transcribe_with_openai_compatible_multimodal(
+    path: Path,
+    config: HetaConfig,
+    *,
+    extra_body: dict[str, Any] | None = None,
+    resolved: ModelClient | None = None,
+) -> dict[str, str]:
+    resolved = resolved or build_multimodal_client(config)
     suffix = path.suffix.lower()
     content: list[dict[str, Any]] = [{"type": "text", "text": _media_prompt(path.name)}]
     if suffix == ".mp4":
@@ -156,11 +178,11 @@ def _transcribe_with_qwen_omni(path: Path, config: HetaConfig) -> dict[str, str]
             }
         )
 
-    response = client.chat.completions.create(
-        model=QWEN_OMNI_MODEL,
+    response = resolved.client.chat.completions.create(
+        model=resolved.model,
         messages=[{"role": "user", "content": content}],
         temperature=0.1,
-        extra_body={"enable_thinking": False},
+        **({"extra_body": extra_body} if extra_body else {}),
     )
     raw = response.choices[0].message.content or ""
     return _normalize_description(_extract_json_object(raw))
@@ -168,6 +190,9 @@ def _transcribe_with_qwen_omni(path: Path, config: HetaConfig) -> dict[str, str]
 
 def _transcribe_with_gemini(path: Path, config: HetaConfig) -> dict[str, str]:
     mime = _mime_type(path)
+    model = config.llm.multimodal_model
+    if not model:
+        raise ValueError("Missing LLM multimodal_model in config.")
     payload = {
         "contents": [
             {
@@ -186,7 +211,7 @@ def _transcribe_with_gemini(path: Path, config: HetaConfig) -> dict[str, str]:
         "generationConfig": {"temperature": 0.1},
     }
     response = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_AUDIO_MODEL}:generateContent",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         params={"key": config.llm.api_key},
         json=payload,
         timeout=300,
@@ -244,6 +269,26 @@ def _mime_type(path: Path) -> str:
     if mime is None:
         raise ValueError(f"Unsupported audio/video type: {suffix}")
     return mime
+
+
+def _require_multimodal(config: HetaConfig, feature: str) -> None:
+    if not (
+        config.llm.multimodal_api_key
+        and config.llm.multimodal_model
+        and config.llm.multimodal_base_url
+    ):
+        raise ValueError(
+            f"{feature} requires a multimodal model. Run `heta init` and enable custom multimodal API, "
+            "or skip this file."
+        )
+
+
+def _require_custom_audio(config: HetaConfig) -> None:
+    if not (config.llm.audio_api_key and config.llm.audio_model and config.llm.audio_base_url):
+        raise ValueError(
+            "Audio/video parsing is not enabled for custom providers because audio APIs vary by vendor. "
+            "Use qwen or gemini for built-in audio support, or enable a custom audio adapter later."
+        )
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:

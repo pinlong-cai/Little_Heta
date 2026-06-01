@@ -17,14 +17,9 @@ from heta.config.schema import HetaConfig
 from heta.kb.models import FileChange, ParsedDocument
 from heta.kb.text import slugify
 from heta.kb.wiki import detect_wiki_changes
+from heta.providers.clients import build_chat_client, extra_body
 
 logger = logging.getLogger(__name__)
-
-FAST_AGENT_MODELS = {
-    "qwen": "qwen3.5-flash",
-    "chatgpt": "gpt-5.4-nano",
-    "gemini": "gemini-2.5-flash",
-}
 
 AGENT_TOOLS = [
     {
@@ -248,43 +243,12 @@ _LLM_MAX_RETRIES = 3
 def _get_client(config: HetaConfig) -> tuple[OpenAI, str]:
     # API keys are intentionally read only from ~/.heta/heta.yaml, which is
     # created by `heta init`. Model choice stays fixed to fast defaults here.
-    provider = config.llm.provider
-    if provider == "qwen":
-        return (
-            OpenAI(
-                api_key=config.llm.api_key,
-                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-                timeout=_LLM_TIMEOUT_SECONDS,
-                max_retries=_LLM_MAX_RETRIES,
-            ),
-            FAST_AGENT_MODELS["qwen"],
-        )
-    if provider == "chatgpt":
-        return (
-            OpenAI(
-                api_key=config.llm.api_key,
-                timeout=_LLM_TIMEOUT_SECONDS,
-                max_retries=_LLM_MAX_RETRIES,
-            ),
-            FAST_AGENT_MODELS["chatgpt"],
-        )
-    if provider == "gemini":
-        return (
-            OpenAI(
-                api_key=config.llm.api_key,
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                timeout=_LLM_TIMEOUT_SECONDS,
-                max_retries=_LLM_MAX_RETRIES,
-            ),
-            FAST_AGENT_MODELS["gemini"],
-        )
-    raise ValueError(f"Unsupported LLM provider: {provider}")
+    resolved = build_chat_client(config, timeout=_LLM_TIMEOUT_SECONDS, max_retries=_LLM_MAX_RETRIES)
+    return resolved.client, resolved.model
 
 
 def _extra_body(config: HetaConfig) -> dict[str, Any] | None:
-    if config.llm.provider == "qwen":
-        return {"enable_thinking": False}
-    return None
+    return extra_body(config)
 
 
 def _chat_completion(

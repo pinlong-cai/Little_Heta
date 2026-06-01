@@ -16,6 +16,25 @@ def _config() -> HetaConfig:
     )
 
 
+def _custom_without_multimodal_config() -> HetaConfig:
+    return HetaConfig(
+        version=1,
+        llm=LLMConfig(
+            provider="custom",
+            api_key="sk-test",
+            chat_api_key="sk-chat",
+            chat_model="chat-model",
+            chat_base_url="http://chat.local/v1",
+            embedding_api_key="sk-embedding",
+            embedding_model="embedding-model",
+            embedding_base_url="http://embedding.local/v1",
+        ),
+        mineru=MinerUConfig.disabled(),
+        vector_index=VectorIndexConfig(enable=False),
+        insert_planning=InsertPlanningConfig.enabled(),
+    )
+
+
 def test_build_image_markdown_uses_compact_retrieval_sections() -> None:
     markdown = build_image_markdown(
         title="Image - Architecture Diagram",
@@ -61,3 +80,16 @@ def test_parse_document_accepts_image_branch(monkeypatch, tmp_path: Path) -> Non
     assert document.source_name == "raw_diagram.png"
     assert document.metadata["extension"] == ".png"
     assert "### Visual Facts" in document.markdown_content
+
+
+def test_image_requires_multimodal_when_custom_skips_it(tmp_path: Path) -> None:
+    source = tmp_path / "diagram.png"
+    source.write_bytes(b"png")
+
+    try:
+        parse_document(source, source, _custom_without_multimodal_config())
+    except ValueError as exc:
+        assert "requires a multimodal model" in str(exc)
+        assert "heta init" in str(exc)
+    else:
+        raise AssertionError("image parsing should require multimodal config")

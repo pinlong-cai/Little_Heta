@@ -11,23 +11,14 @@ from pathlib import Path
 from typing import Iterable
 
 import sqlite_vec
-from openai import OpenAI
 
 from heta.config.schema import HetaConfig
 from heta.kb import paths
 from heta.kb.models import FileChange
+from heta.providers.clients import EMBEDDING_DIM, build_embedding_client
 
-EMBEDDING_DIM = 1024
-EMBEDDING_MODELS = {
-    "qwen": "text-embedding-v4",
-    "chatgpt": "text-embedding-3-small",
-    "gemini": "text-embedding-004",
-}
 EMBEDDING_BATCH_SIZE = 10
-EMBEDDING_BASE_URLS = {
-    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
-}
+MAX_CHUNK_CHARS = 4096
 PAGE_NAME_RE = re.compile(r"^(?P<wiki_id>\d+)-.+\.md$")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
@@ -51,6 +42,7 @@ class WikiChunkSearchResult:
     content: str
     distance: float
     score: float
+    retrieval: str = "vector"
 
 
 def sync_wiki_vector_index(
@@ -66,10 +58,7 @@ def sync_wiki_vector_index(
     """
     db_path = paths.vector_db_path(base_dir)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-    conn.enable_load_extension(False)
+    conn = _connect_index_db(db_path)
     try:
         _ensure_schema(conn)
         changed = list(changes)
@@ -112,11 +101,10 @@ def search_wiki_vector_index(
     if not db_path.exists():
         return []
 
-    conn = sqlite3.connect(db_path)
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-    conn.enable_load_extension(False)
+    conn = _connect_index_db(db_path)
     try:
+        _ensure_schema(conn)
+        conn.commit()
         embedding = _embed_texts([query], config)[0]
         rows = conn.execute(
             """
@@ -146,9 +134,89 @@ def search_wiki_vector_index(
             content=str(row[4]),
             distance=float(row[5]),
             score=1.0 / (1.0 + float(row[5])),
+            retrieval="vector",
         )
         for row in rows
     ]
+
+
+def search_wiki_fts_index(
+    *,
+    query: str,
+    top_k: int = 5,
+    base_dir: Path | None = None,
+) -> list[WikiChunkSearchResult]:
+    """Return lexical wiki chunk matches from SQLite FTS5 trigram search."""
+    db_path = paths.vector_db_path(base_dir)
+    if not db_path.exists():
+        return []
+
+    match_query = _fts_match_query(query)
+    if not match_query:
+        return []
+
+    conn = _connect_index_db(db_path)
+    try:
+        _ensure_schema(conn)
+        conn.commit()
+        rows = conn.execute(
+            """
+            SELECT
+              c.wiki_id,
+              c.page_name,
+              c.chunk_id,
+              c.heading_path,
+              c.content,
+              bm25(wiki_chunk_fts) AS rank
+            FROM wiki_chunk_fts f
+            JOIN wiki_chunks c ON c.id = f.rowid
+            WHERE wiki_chunk_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (match_query, max(1, top_k)),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        WikiChunkSearchResult(
+            wiki_id=int(row[0]),
+            page_name=str(row[1]),
+            chunk_id=str(row[2]),
+            heading_path=str(row[3]),
+            content=str(row[4]),
+            distance=float(row[5]),
+            score=1.0 / (1.0 + max(float(row[5]), 0.0)),
+            retrieval="fts",
+        )
+        for row in rows
+    ]
+
+
+def search_wiki_hybrid_index(
+    *,
+    query: str,
+    config: HetaConfig,
+    top_k: int = 5,
+    candidate_k: int | None = None,
+    base_dir: Path | None = None,
+) -> list[WikiChunkSearchResult]:
+    """Return wiki chunk matches fused from vector and lexical retrieval."""
+    limit = max(1, top_k)
+    candidates = max(limit, candidate_k or limit * 3)
+    vector_results = search_wiki_vector_index(
+        query=query,
+        config=config,
+        top_k=candidates,
+        base_dir=base_dir,
+    )
+    fts_results = search_wiki_fts_index(
+        query=query,
+        top_k=candidates,
+        base_dir=base_dir,
+    )
+    return _rrf_fuse(vector_results=vector_results, fts_results=fts_results, top_k=limit)
 
 
 def chunk_wiki_page(page: Path) -> list[WikiChunk]:
@@ -164,21 +232,29 @@ def chunk_wiki_page(page: Path) -> list[WikiChunk]:
         return []
 
     chunks: list[WikiChunk] = []
+    seen_hashes: set[str] = set()
     sections = _content_sections(content)
     for index, (heading_path, body) in enumerate(sections):
-        chunk_text = _chunk_text(title=title, summary=summary, heading_path=heading_path, body=body)
-        content_hash = _hash_text(chunk_text)
-        chunk_id = f"{wiki_id}:{content_hash[:16]}"
-        chunks.append(
-            WikiChunk(
-                wiki_id=wiki_id,
-                page_name=page.name,
-                chunk_id=chunk_id,
-                heading_path=heading_path or "Content",
-                content=chunk_text,
-                content_hash=content_hash,
+        prefix_overhead = len(_chunk_text(title=title, summary=summary, heading_path=heading_path, body=""))
+        body_budget = max(MAX_CHUNK_CHARS - prefix_overhead - 16, 256)
+        body_pieces = _split_text(body, body_budget) or [body]
+        for piece in body_pieces:
+            chunk_text = _chunk_text(title=title, summary=summary, heading_path=heading_path, body=piece)
+            content_hash = _hash_text(chunk_text)
+            if content_hash in seen_hashes:
+                continue
+            seen_hashes.add(content_hash)
+            chunk_id = f"{wiki_id}:{content_hash[:16]}"
+            chunks.append(
+                WikiChunk(
+                    wiki_id=wiki_id,
+                    page_name=page.name,
+                    chunk_id=chunk_id,
+                    heading_path=heading_path or "Content",
+                    content=chunk_text,
+                    content_hash=content_hash,
+                )
             )
-        )
     return chunks
 
 
@@ -204,12 +280,32 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS wiki_chunk_fts USING fts5(
+          page_name,
+          heading_path,
+          content,
+          tokenize='trigram'
+        )
+        """
+    )
+    _backfill_fts_if_needed(conn)
+
+
+def _connect_index_db(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    return conn
 
 
 def _delete_page_chunks(conn: sqlite3.Connection, wiki_id: int) -> None:
     rowids = [row[0] for row in conn.execute("SELECT id FROM wiki_chunks WHERE wiki_id = ?", (wiki_id,))]
     for rowid in rowids:
         conn.execute("DELETE FROM wiki_chunk_vec WHERE rowid = ?", (rowid,))
+        conn.execute("DELETE FROM wiki_chunk_fts WHERE rowid = ?", (rowid,))
     conn.execute("DELETE FROM wiki_chunks WHERE wiki_id = ?", (wiki_id,))
 
 
@@ -236,28 +332,118 @@ def _insert_chunk(conn: sqlite3.Connection, chunk: WikiChunk, embedding: list[fl
         "INSERT INTO wiki_chunk_vec(rowid, embedding) VALUES (?, ?)",
         (cursor.lastrowid, sqlite_vec.serialize_float32(embedding)),
     )
+    conn.execute(
+        """
+        INSERT INTO wiki_chunk_fts(rowid, page_name, heading_path, content)
+        VALUES (?, ?, ?, ?)
+        """,
+        (cursor.lastrowid, chunk.page_name, chunk.heading_path, chunk.content),
+    )
+
+
+def _backfill_fts_if_needed(conn: sqlite3.Connection) -> None:
+    chunks_count = conn.execute("SELECT count(*) FROM wiki_chunks").fetchone()[0]
+    fts_count = conn.execute("SELECT count(*) FROM wiki_chunk_fts").fetchone()[0]
+    if chunks_count == fts_count:
+        return
+    conn.execute("DELETE FROM wiki_chunk_fts")
+    conn.execute(
+        """
+        INSERT INTO wiki_chunk_fts(rowid, page_name, heading_path, content)
+        SELECT id, page_name, heading_path, content
+        FROM wiki_chunks
+        """
+    )
+
+
+def _fts_match_query(query: str) -> str:
+    terms = _fts_terms(query)
+    return " OR ".join(f'"{term}"' for term in terms)
+
+
+def _fts_terms(query: str) -> list[str]:
+    normalized = _normalize_fts_query(query)
+    raw_terms = re.findall(r"[\w\u4e00-\u9fff][\w\u4e00-\u9fff./\-]*", normalized)
+    terms: list[str] = []
+    seen: set[str] = set()
+    for term in raw_terms:
+        term = term.strip("./-")
+        if len(term) < 3 or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
+
+
+def _normalize_fts_query(query: str) -> str:
+    table = str.maketrans(
+        {
+            "－": "-",
+            "–": "-",
+            "—": "-",
+            "−": "-",
+            "：": ":",
+            "／": "/",
+            "（": " ",
+            "）": " ",
+            "，": " ",
+            "。": " ",
+            "；": " ",
+            "、": " ",
+        }
+    )
+    return re.sub(r"\s+", " ", query.translate(table).upper()).strip()
+
+
+def _rrf_fuse(
+    *,
+    vector_results: list[WikiChunkSearchResult],
+    fts_results: list[WikiChunkSearchResult],
+    top_k: int,
+    rrf_k: int = 60,
+) -> list[WikiChunkSearchResult]:
+    by_chunk: dict[str, WikiChunkSearchResult] = {}
+    scores: dict[str, float] = {}
+    retrievals: dict[str, set[str]] = {}
+
+    for results, retrieval in ((vector_results, "vector"), (fts_results, "fts")):
+        for rank, result in enumerate(results, start=1):
+            by_chunk.setdefault(result.chunk_id, result)
+            scores[result.chunk_id] = scores.get(result.chunk_id, 0.0) + 1.0 / (rrf_k + rank)
+            retrievals.setdefault(result.chunk_id, set()).add(retrieval)
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)[:top_k]
+    max_score = ranked[0][1] if ranked else 1.0
+    fused: list[WikiChunkSearchResult] = []
+    for chunk_id, score in ranked:
+        result = by_chunk[chunk_id]
+        fused.append(
+            WikiChunkSearchResult(
+                wiki_id=result.wiki_id,
+                page_name=result.page_name,
+                chunk_id=result.chunk_id,
+                heading_path=result.heading_path,
+                content=result.content,
+                distance=result.distance,
+                score=score / max_score,
+                retrieval="+".join(sorted(retrievals[chunk_id])),
+            )
+        )
+    return fused
 
 
 def _embed_texts(texts: list[str], config: HetaConfig) -> list[list[float]]:
-    client = _embedding_client(config)
+    resolved = build_embedding_client(config)
     embeddings: list[list[float]] = []
     for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
         batch = texts[start : start + EMBEDDING_BATCH_SIZE]
-        response = client.embeddings.create(
-            model=EMBEDDING_MODELS[config.llm.provider],
+        response = resolved.client.embeddings.create(
+            model=resolved.model,
             input=batch,
             dimensions=EMBEDDING_DIM,
         )
         embeddings.extend(item.embedding for item in response.data)
     return embeddings
-
-
-def _embedding_client(config: HetaConfig) -> OpenAI:
-    kwargs = {"api_key": config.llm.api_key, "timeout": 120}
-    base_url = EMBEDDING_BASE_URLS.get(config.llm.provider)
-    if base_url:
-        kwargs["base_url"] = base_url
-    return OpenAI(**kwargs)
 
 
 def _wiki_id_from_path(path: str) -> int | None:
@@ -316,6 +502,41 @@ def _content_sections(content: str) -> list[tuple[str, str]]:
     return sections or [("Content", content.strip())]
 
 
+def _split_text(text: str, max_chars: int) -> list[str]:
+    """Split text into pieces of at most max_chars, preferring paragraph then line then sentence boundaries."""
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    for sep in ("\n\n", "\n", "。", "！", "？", ". ", " "):
+        if sep not in text:
+            continue
+        parts = text.split(sep)
+        pieces: list[str] = []
+        buf = ""
+        for part in parts:
+            candidate = (buf + sep + part) if buf else part
+            if len(candidate) <= max_chars:
+                buf = candidate
+            else:
+                if buf:
+                    pieces.append(buf)
+                buf = part
+        if buf:
+            pieces.append(buf)
+        result: list[str] = []
+        for piece in pieces:
+            if len(piece) <= max_chars:
+                result.append(piece)
+            else:
+                result.extend(_split_text(piece, max_chars))
+        return result
+
+    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
+
+
 def _chunk_text(*, title: str, summary: str, heading_path: str, body: str) -> str:
     parts = [f"Page: {title}"]
     if summary:
@@ -335,6 +556,8 @@ __all__ = [
     "WikiChunk",
     "WikiChunkSearchResult",
     "chunk_wiki_page",
+    "search_wiki_fts_index",
+    "search_wiki_hybrid_index",
     "search_wiki_vector_index",
     "sync_wiki_vector_index",
 ]

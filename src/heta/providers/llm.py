@@ -9,7 +9,7 @@ import requests
 VALIDATION_TIMEOUT_SECONDS: Final[float] = 10.0
 
 
-def validate_llm(provider: str, api_key: str) -> bool:
+def validate_llm(provider: str, api_key: str, base_url: str | None = None) -> bool:
     """Validate that an LLM provider API key can reach its provider."""
     api_key = api_key.strip()
     if provider == "qwen":
@@ -21,6 +21,8 @@ def validate_llm(provider: str, api_key: str) -> bool:
         return _validate_bearer_models("https://api.openai.com/v1/models", api_key)
     if provider == "gemini":
         return _validate_gemini_models(api_key)
+    if provider == "custom" and base_url:
+        return _validate_bearer_models(base_url.rstrip("/") + "/models", api_key)
     return False
 
 
@@ -46,4 +48,3 @@ def _validate_gemini_models(api_key: str) -> bool:
     except requests.RequestException:
         return False
     return response.status_code == 200
-

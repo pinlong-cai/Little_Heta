@@ -18,6 +18,14 @@ def test_validate_llm_non_200_fails(get: Mock) -> None:
     assert validate_llm("qwen", "bad-key") is False
 
 
+@patch("heta.providers.llm.requests.get")
+def test_validate_custom_llm_uses_base_url_models(get: Mock) -> None:
+    get.return_value.status_code = 200
+
+    assert validate_llm("custom", "sk-test", "http://llm.local/v1") is True
+    assert get.call_args.args[0] == "http://llm.local/v1/models"
+
+
 @patch("heta.providers.mineru.requests.post")
 def test_validate_mineru_cloud_success(post: Mock) -> None:
     post.return_value.status_code = 200

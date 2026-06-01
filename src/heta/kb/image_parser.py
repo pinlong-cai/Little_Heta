@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from heta.config.schema import HetaConfig
-from heta.kb.agent import _chat_completion, _get_client
+from heta.kb.agent import _chat_completion
+from heta.providers.clients import build_multimodal_client
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -23,6 +24,7 @@ _MIME_TYPES = {
 
 def parse_image_markdown(source_path: Path, archived_path: Path, config: HetaConfig) -> str:
     """Describe an image with a VLM and return stable wiki-flavored Markdown."""
+    _require_multimodal(config, "Image parsing")
     description = describe_image(source_path=source_path, config=config)
     return build_image_markdown(
         title=f"Image - {source_path.stem}",
@@ -36,10 +38,11 @@ def parse_image_markdown(source_path: Path, archived_path: Path, config: HetaCon
 
 
 def describe_image(*, source_path: Path, config: HetaConfig) -> dict[str, str]:
-    client, model = _get_client(config)
+    _require_multimodal(config, "Image parsing")
+    resolved = build_multimodal_client(config)
     response = _chat_completion(
-        client=client,
-        model=model,
+        client=resolved.client,
+        model=resolved.model,
         messages=[
             {"role": "system", "content": _image_system_prompt()},
             {
@@ -124,6 +127,18 @@ def _data_url(path: Path) -> str:
         raise ValueError(f"Unsupported image type: {suffix}")
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+def _require_multimodal(config: HetaConfig, feature: str) -> None:
+    if not (
+        config.llm.multimodal_api_key
+        and config.llm.multimodal_model
+        and config.llm.multimodal_base_url
+    ):
+        raise ValueError(
+            f"{feature} requires a multimodal model. Run `heta init` and enable custom multimodal API, "
+            "or skip this file."
+        )
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:

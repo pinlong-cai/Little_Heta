@@ -53,7 +53,7 @@ SEARCH_VECTOR_TOOL = {
     "type": "function",
     "function": {
         "name": "search_vector",
-        "description": "Search semantic wiki chunks. Returns wiki id, page path, heading path, content, and score.",
+        "description": "Search hybrid semantic and lexical wiki chunks. Returns wiki id, page path, heading path, content, and score.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -213,7 +213,7 @@ def run_query_agent(
 
 def _system_prompt(vector_enabled: bool) -> str:
     vector_rule = (
-        "- You may call search_vector again with a refined query if the current evidence is insufficient."
+        "- You may call search_vector again with a refined semantic or keyword query if the current evidence is insufficient."
         if vector_enabled
         else "- Vector search is disabled; rely on the index and pages you read."
     )
@@ -287,7 +287,7 @@ def _initial_message(
         f"Current date: {datetime.now().date().isoformat()}",
         f"Question:\n{question}",
         f"Wiki Index:\n{index_text or '(index.md is missing or empty)'}",
-        f"Semantic Matches:\n{format_vector_matches(vector_matches)}",
+        f"Hybrid Matches:\n{format_vector_matches(vector_matches)}",
     ]
     if extra_context:
         parts.append(f"Extra Context:\n{extra_context}")
