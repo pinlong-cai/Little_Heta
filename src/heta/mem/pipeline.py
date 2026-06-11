@@ -24,9 +24,11 @@ from heta.mem.paths import db_path, ensure_mem_dir
 @dataclass
 class RememberResult:
     session_id: str
+    l0_count: int
     l1_count: int
     l2_count: int
     elapsed_s: float
+    timings: dict[str, float] | None = None
 
 
 def _detect_episode_duplicates(
@@ -81,17 +83,29 @@ def _detect_fact_conflicts(
         conn.close()
 
 
-def remember(text: str, config: HetaConfig) -> RememberResult:
+def remember(
+    text: str,
+    config: HetaConfig,
+    *,
+    mode: str = "high",
+) -> RememberResult:
+    if mode not in {"fast", "high"}:
+        raise ValueError("remember mode must be one of: fast, high")
+
+    t_total = time.perf_counter()
+    timings: dict[str, float] = {}
+
+    t_stage = time.perf_counter()
     ensure_mem_dir()
     conn = get_connection(db_path(), with_vec=True)
     init_db(conn)
 
     now = int(time.time())
     session_id = str(uuid.uuid4())
-    llm_client, llm_model = build_client(config)
-    emb_client, emb_model = build_embedding_client(config)
+    timings["setup"] = round(time.perf_counter() - t_stage, 3)
 
     # --- session + L0 ---
+    t_stage = time.perf_counter()
     session_store.create_session(conn, Session(session_id=session_id, started_at=now))
     l0_store.insert_turn(
         conn,
@@ -104,9 +118,27 @@ def remember(text: str, config: HetaConfig) -> RememberResult:
             created_at=now,
         ),
     )
+    timings["l0_write"] = round(time.perf_counter() - t_stage, 3)
+    if mode == "fast":
+        t_stage = time.perf_counter()
+        session_store.close_session(conn, session_id, int(time.time()))
+        conn.close()
+        timings["close"] = round(time.perf_counter() - t_stage, 3)
+        timings["total"] = round(time.perf_counter() - t_total, 3)
+        return RememberResult(
+            session_id=session_id,
+            l0_count=1,
+            l1_count=0,
+            l2_count=0,
+            elapsed_s=round(time.perf_counter() - t_total, 2),
+            timings=timings,
+        )
+
+    llm_client, llm_model = build_client(config)
+    emb_client, emb_model = build_embedding_client(config)
 
     # --- extract ---
-    t0 = time.time()
+    t_stage = time.perf_counter()
     with ThreadPoolExecutor(max_workers=2) as executor:
         episodes_future = executor.submit(
             extract_episodes, llm_client, llm_model, text, config, now
@@ -116,8 +148,10 @@ def remember(text: str, config: HetaConfig) -> RememberResult:
         )
         raw_episodes = episodes_future.result()
         raw_facts = facts_future.result()
+    timings["extract"] = round(time.perf_counter() - t_stage, 3)
 
     # --- prepare L1/L2 records ---
+    t_stage = time.perf_counter()
     prepared_episodes = []
     for ep in raw_episodes:
         summary = ep.get("summary", ep.get("what", ""))
@@ -143,8 +177,10 @@ def remember(text: str, config: HetaConfig) -> RememberResult:
         object_type_val = raw_object_type[0] if isinstance(raw_object_type, list) else str(raw_object_type)
         ft = fact_text(subject, predicate, object_)
         prepared_facts.append((raw_fact, subject, predicate, object_, object_type_val, ft))
+    timings["prepare"] = round(time.perf_counter() - t_stage, 3)
 
     # --- detect L1 duplicates and L2 conflicts concurrently ---
+    t_stage = time.perf_counter()
     with ThreadPoolExecutor(max_workers=2) as executor:
         episode_future = executor.submit(
             _detect_episode_duplicates,
@@ -170,8 +206,10 @@ def remember(text: str, config: HetaConfig) -> RememberResult:
 
         episode_dedup_results = episode_future.result() if episode_future else []
         conflict_results = conflict_future.result() if conflict_future else []
+    timings["dedup_conflict"] = round(time.perf_counter() - t_stage, 3)
 
     # --- persist L1 ---
+    t_stage = time.perf_counter()
     l1_count = 0
     for prepared, dedup_result in zip(prepared_episodes, episode_dedup_results, strict=True):
         if dedup_result.duplicate_of is not None:
@@ -203,8 +241,10 @@ def remember(text: str, config: HetaConfig) -> RememberResult:
         l1_store.insert_episodic(conn, episode)
         l1_store.insert_episode_embedding(conn, memory_id, dedup_result.embedding)
         l1_count += 1
+    timings["persist_l1"] = round(time.perf_counter() - t_stage, 3)
 
     # --- persist L2 (semantic conflict resolution) ---
+    t_stage = time.perf_counter()
     l2_count = 0
     for prepared, conflict_result in zip(prepared_facts, conflict_results, strict=True):
         if conflict_result.duplicate_of is not None:
@@ -241,13 +281,19 @@ def remember(text: str, config: HetaConfig) -> RememberResult:
         l2_store.insert_fact(conn, fact_record)
         l2_store.insert_fact_embedding(conn, memory_id, conflict_result.embedding)
         l2_count += 1
+    timings["persist_l2"] = round(time.perf_counter() - t_stage, 3)
 
+    t_stage = time.perf_counter()
     session_store.close_session(conn, session_id, int(time.time()))
     conn.close()
+    timings["close"] = round(time.perf_counter() - t_stage, 3)
+    timings["total"] = round(time.perf_counter() - t_total, 3)
 
     return RememberResult(
         session_id=session_id,
+        l0_count=1,
         l1_count=l1_count,
         l2_count=l2_count,
-        elapsed_s=round(time.time() - t0, 2),
+        elapsed_s=round(time.perf_counter() - t_total, 2),
+        timings=timings,
     )

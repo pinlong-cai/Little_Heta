@@ -159,6 +159,7 @@ def test_remember_empty_extraction_succeeds(config, tmp_db) -> None:
     with _patch_pipeline(tmp_db, episodes=[], facts=[]):
         result = remember("no events here", config)
 
+    assert result.l0_count == 1
     assert result.l1_count == 0
     assert result.l2_count == 0
 
@@ -209,6 +210,7 @@ def test_remember_extracts_episodes_and_facts_concurrently(config, tmp_db) -> No
     ):
         result = remember("some text", config)
 
+    assert result.l0_count == 1
     assert result.l1_count == 0
     assert result.l2_count == 0
 
@@ -505,3 +507,43 @@ def test_remember_dedups_episodes_and_detects_fact_conflicts_concurrently(config
 
     assert result.l1_count == 1
     assert result.l2_count == 1
+
+
+def test_remember_result_includes_stage_timings(config, tmp_db) -> None:
+    with _patch_pipeline(tmp_db, episodes=[EPISODE_DICT], facts=[FACT_DICT]):
+        result = remember("timed memory", config)
+
+    assert result.timings is not None
+    for key in (
+        "setup",
+        "l0_write",
+        "extract",
+        "prepare",
+        "dedup_conflict",
+        "persist_l1",
+        "persist_l2",
+        "close",
+        "total",
+    ):
+        assert key in result.timings
+        assert result.timings[key] >= 0
+
+
+def test_remember_fast_mode_only_stores_l0(config, tmp_db) -> None:
+    with _patch_pipeline(tmp_db, episodes=[EPISODE_DICT], facts=[FACT_DICT]):
+        result = remember("raw only", config, mode="fast")
+
+    conn = _open(tmp_db)
+    turns = conn.execute("SELECT text_content FROM l0_turn").fetchall()
+    l1_count = conn.execute("SELECT COUNT(*) FROM l1_episodic").fetchone()[0]
+    l2_count = conn.execute("SELECT COUNT(*) FROM l2_semantic").fetchone()[0]
+    conn.close()
+
+    assert result.l0_count == 1
+    assert result.l1_count == 0
+    assert result.l2_count == 0
+    assert turns[0]["text_content"] == "raw only"
+    assert l1_count == 0
+    assert l2_count == 0
+    assert "extract" not in (result.timings or {})
+
