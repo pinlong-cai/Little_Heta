@@ -16,6 +16,7 @@ import pytest
 from heta.config.schema import InsertPlanningConfig, HetaConfig, LLMConfig, MinerUConfig, VectorIndexConfig
 from heta.mem.client import EMBEDDING_DIM
 from heta.mem.db import get_connection, init_db
+from heta.mem.l1_dedup import EpisodeDedupResult
 from heta.mem.l2_conflict import ConflictResult
 from heta.mem.pipeline import remember
 
@@ -98,6 +99,13 @@ def _patch_pipeline(
         patch("heta.mem.pipeline.extract_episodes", return_value=episodes),
         patch("heta.mem.pipeline.extract_facts", return_value=facts),
         patch("heta.mem.pipeline.embed_text", return_value=FAKE_EMB),
+        patch(
+            "heta.mem.pipeline.detect_episode_duplicates_batch",
+            side_effect=lambda new_episode_summaries, **kwargs: [
+                EpisodeDedupResult(duplicate_of=None, embedding=FAKE_EMB)
+                for _ in new_episode_summaries
+            ],
+        ),
         patch(
             "heta.mem.pipeline.detect_conflicts_batch",
             side_effect=lambda new_fact_texts, **kwargs: [
@@ -196,6 +204,7 @@ def test_remember_extracts_episodes_and_facts_concurrently(config, tmp_db) -> No
         patch("heta.mem.pipeline.build_embedding_client", return_value=(mock_client, "mock-emb")),
         patch("heta.mem.pipeline.extract_episodes", side_effect=fake_extract_episodes),
         patch("heta.mem.pipeline.extract_facts", side_effect=fake_extract_facts),
+        patch("heta.mem.pipeline.detect_episode_duplicates_batch", return_value=[]),
         patch("heta.mem.pipeline.detect_conflicts_batch", return_value=[]),
     ):
         result = remember("some text", config)
@@ -450,3 +459,49 @@ def test_remember_skips_duplicate_l2_fact(config, tmp_db) -> None:
 
     assert result.l2_count == 0
     assert l2_rows == []
+
+
+def test_remember_skips_duplicate_l1_episode(config, tmp_db) -> None:
+    def _duplicate_episodes(new_episode_summaries, **kwargs):
+        return [
+            EpisodeDedupResult(duplicate_of="old-episode", embedding=FAKE_EMB)
+            for _ in new_episode_summaries
+        ]
+
+    with (
+        _patch_pipeline(tmp_db, episodes=[EPISODE_DICT]),
+        patch("heta.mem.pipeline.detect_episode_duplicates_batch", side_effect=_duplicate_episodes),
+    ):
+        result = remember("duplicate episode", config)
+
+    conn = _open(tmp_db)
+    l1_rows = conn.execute("SELECT * FROM l1_episodic").fetchall()
+    conn.close()
+
+    assert result.l1_count == 0
+    assert l1_rows == []
+
+
+def test_remember_dedups_episodes_and_detects_fact_conflicts_concurrently(config, tmp_db) -> None:
+    episode_dedup_started = threading.Event()
+    fact_conflict_started = threading.Event()
+
+    def _episode_dedup(new_episode_summaries, **kwargs):
+        episode_dedup_started.set()
+        assert fact_conflict_started.wait(1.0)
+        return [EpisodeDedupResult(duplicate_of=None, embedding=FAKE_EMB) for _ in new_episode_summaries]
+
+    def _fact_conflicts(new_fact_texts, **kwargs):
+        fact_conflict_started.set()
+        assert episode_dedup_started.wait(1.0)
+        return [ConflictResult(ids_to_deprecate=[], embedding=FAKE_EMB) for _ in new_fact_texts]
+
+    with (
+        _patch_pipeline(tmp_db, episodes=[EPISODE_DICT], facts=[FACT_DICT]),
+        patch("heta.mem.pipeline.detect_episode_duplicates_batch", side_effect=_episode_dedup),
+        patch("heta.mem.pipeline.detect_conflicts_batch", side_effect=_fact_conflicts),
+    ):
+        result = remember("episode and fact", config)
+
+    assert result.l1_count == 1
+    assert result.l2_count == 1

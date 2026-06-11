@@ -13,6 +13,7 @@ from heta.mem import l0_store, l1_store, l2_store, meta_store, session_store
 from heta.mem.client import build_client, build_embedding_client
 from heta.mem.db import get_connection, init_db
 from heta.mem.embedder import embed_text, fact_text
+from heta.mem.l1_dedup import detect_episode_duplicates_batch
 from heta.mem.l1_extractor import extract_episodes, resolve_when_ts
 from heta.mem.l2_conflict import detect_conflicts_batch
 from heta.mem.l2_extractor import extract_facts
@@ -26,6 +27,58 @@ class RememberResult:
     l1_count: int
     l2_count: int
     elapsed_s: float
+
+
+def _detect_episode_duplicates(
+    path,
+    summaries,
+    llm_client,
+    llm_model,
+    emb_client,
+    emb_model,
+    config,
+):
+    conn = get_connection(path, with_vec=True)
+    init_db(conn)
+    try:
+        return detect_episode_duplicates_batch(
+            conn=conn,
+            new_episode_summaries=summaries,
+            llm_client=llm_client,
+            llm_model=llm_model,
+            emb_client=emb_client,
+            emb_model=emb_model,
+            config=config,
+        )
+    finally:
+        conn.close()
+
+
+def _detect_fact_conflicts(
+    path,
+    fact_texts,
+    llm_client,
+    llm_model,
+    emb_client,
+    emb_model,
+    config,
+    session_id,
+):
+    conn = get_connection(path, with_vec=True)
+    init_db(conn)
+    try:
+        return detect_conflicts_batch(
+            conn=conn,
+            new_fact_texts=fact_texts,
+            llm_client=llm_client,
+            llm_model=llm_model,
+            emb_client=emb_client,
+            emb_model=emb_model,
+            config=config,
+            session_id=session_id,
+        )
+    finally:
+        conn.close()
 
 
 def remember(text: str, config: HetaConfig) -> RememberResult:
@@ -64,9 +117,67 @@ def remember(text: str, config: HetaConfig) -> RememberResult:
         raw_episodes = episodes_future.result()
         raw_facts = facts_future.result()
 
+    # --- prepare L1/L2 records ---
+    prepared_episodes = []
+    for ep in raw_episodes:
+        summary = ep.get("summary", ep.get("what", ""))
+        prepared_episodes.append((
+            ep,
+            json.dumps(ep.get("who", ["user"]), ensure_ascii=False),
+            ep.get("what", ""),
+            ep.get("where_loc"),
+            resolve_when_ts(ep.get("when_resolved")),
+            ep.get("when_text"),
+            ep.get("when_resolved"),
+            ep.get("when_precision"),
+            ep.get("why"),
+            summary,
+        ))
+
+    prepared_facts = []
+    for raw_fact in raw_facts:
+        subject = str(raw_fact.get("subject", ""))
+        predicate = str(raw_fact.get("predicate", ""))
+        object_ = str(raw_fact.get("object", ""))
+        raw_object_type = raw_fact.get("object_type", "literal")
+        object_type_val = raw_object_type[0] if isinstance(raw_object_type, list) else str(raw_object_type)
+        ft = fact_text(subject, predicate, object_)
+        prepared_facts.append((raw_fact, subject, predicate, object_, object_type_val, ft))
+
+    # --- detect L1 duplicates and L2 conflicts concurrently ---
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        episode_future = executor.submit(
+            _detect_episode_duplicates,
+            db_path(),
+            [item[9] for item in prepared_episodes],
+            llm_client,
+            llm_model,
+            emb_client,
+            emb_model,
+            config,
+        ) if prepared_episodes else None
+        conflict_future = executor.submit(
+            _detect_fact_conflicts,
+            db_path(),
+            [item[5] for item in prepared_facts],
+            llm_client,
+            llm_model,
+            emb_client,
+            emb_model,
+            config,
+            session_id,
+        ) if prepared_facts else None
+
+        episode_dedup_results = episode_future.result() if episode_future else []
+        conflict_results = conflict_future.result() if conflict_future else []
+
     # --- persist L1 ---
     l1_count = 0
-    for ep in raw_episodes:
+    for prepared, dedup_result in zip(prepared_episodes, episode_dedup_results, strict=True):
+        if dedup_result.duplicate_of is not None:
+            continue
+
+        _, who, what, where_loc, when_ts, when_text, when_resolved, when_precision, why, summary = prepared
         memory_id = str(uuid.uuid4())
         meta = MemoryMeta(
             memory_id=memory_id,
@@ -78,45 +189,23 @@ def remember(text: str, config: HetaConfig) -> RememberResult:
         )
         episode = L1Episodic(
             memory_id=memory_id,
-            who=json.dumps(ep.get("who", ["user"]), ensure_ascii=False),
-            what=ep.get("what", ""),
-            where_loc=ep.get("where_loc"),
-            when_ts=resolve_when_ts(ep.get("when_resolved")),
-            when_text=ep.get("when_text"),
-            when_resolved=ep.get("when_resolved"),
-            when_precision=ep.get("when_precision"),
-            why=ep.get("why"),
-            summary=ep.get("summary", ep.get("what", "")),
+            who=who,
+            what=what,
+            where_loc=where_loc,
+            when_ts=when_ts,
+            when_text=when_text,
+            when_resolved=when_resolved,
+            when_precision=when_precision,
+            why=why,
+            summary=summary,
         )
         meta_store.insert_meta(conn, meta)
         l1_store.insert_episodic(conn, episode)
-        l1_emb = embed_text(emb_client, emb_model, episode.summary)
-        l1_store.insert_episode_embedding(conn, memory_id, l1_emb)
+        l1_store.insert_episode_embedding(conn, memory_id, dedup_result.embedding)
         l1_count += 1
 
     # --- persist L2 (semantic conflict resolution) ---
     l2_count = 0
-    prepared_facts = []
-    for raw_fact in raw_facts:
-        subject = str(raw_fact.get("subject", ""))
-        predicate = str(raw_fact.get("predicate", ""))
-        object_ = str(raw_fact.get("object", ""))
-        raw_object_type = raw_fact.get("object_type", "literal")
-        object_type_val = raw_object_type[0] if isinstance(raw_object_type, list) else str(raw_object_type)
-        ft = fact_text(subject, predicate, object_)
-        prepared_facts.append((raw_fact, subject, predicate, object_, object_type_val, ft))
-
-    conflict_results = detect_conflicts_batch(
-        conn=conn,
-        new_fact_texts=[item[5] for item in prepared_facts],
-        llm_client=llm_client,
-        llm_model=llm_model,
-        emb_client=emb_client,
-        emb_model=emb_model,
-        config=config,
-        session_id=session_id,
-    ) if prepared_facts else []
-
     for prepared, conflict_result in zip(prepared_facts, conflict_results, strict=True):
         if conflict_result.duplicate_of is not None:
             continue

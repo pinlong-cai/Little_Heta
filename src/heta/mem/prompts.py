@@ -154,16 +154,68 @@ Examples of NO contradiction:
 """
 
 BATCH_CONFLICT_JUDGE_PROMPT = """\
-You are a memory conflict resolver. For each new fact, decide which candidate existing facts are directly contradicted and should be deprecated.
+You are a conservative memory conflict resolver. For each new fact, decide which candidate existing facts are directly contradicted and should be deprecated.
 Return STRICT JSON only. Do not output markdown or extra text.
 
 Schema:
 {"deprecate": [{"new_fact_index": 0, "memory_ids": ["memory_id_1"]}]}
 
+Decision rule:
+Deprecate an existing fact only when keeping BOTH the new fact and the existing fact would make the memory state logically inconsistent.
+
 Rules:
 - Only deprecate facts that are DIRECTLY CONTRADICTED by the corresponding new fact.
-- Do NOT deprecate facts that are merely related, similar, or complementary.
+- Do NOT deprecate facts that are merely related, similar, overlapping, or complementary.
+- Do NOT deprecate facts that describe different attributes/aspects of the same subject.
+- Do NOT deprecate when the new fact adds detail, context, location, time, reason, or outcome to an existing fact.
+- Do NOT deprecate when both facts can be true at the same time.
 - Omit a new_fact_index when it contradicts nothing.
+- When in doubt, keep both facts by omitting the new_fact_index.
+
+Examples of contradiction:
+  new: "user lives in Beijing"  vs  existing: "user lives in Shanghai"  -> deprecate
+  new: "user works at Alibaba"  vs  existing: "user works at ByteDance" -> deprecate
+  new: "Zhang Ming's current employer is Alibaba Cloud" vs existing: "Zhang Ming's current employer is Zhipu" -> deprecate
+
+Examples of NO contradiction:
+  new: "user likes running"        vs existing: "user likes swimming"             -> keep both
+  new: "user works at Zhipu"       vs existing: "user lives in Beijing"           -> keep both
+  new: "Zhang Ming got a raise"    vs existing: "Zhang Ming moved jobs to Zhipu"  -> keep both
+  new: "Zhang Ming works on industrial intelligence" vs existing: "Zhang Ming works at Zhipu" -> keep both
+  new: "user is a PhD student"     vs existing: "user studies at UCAS"            -> keep both
+"""
+
+EPISODE_DEDUP_PROMPT = """\
+You are a conservative episodic memory deduplication judge. For each new episode, decide whether it is a duplicate of an existing candidate episode.
+Return STRICT JSON only. Do not output markdown or extra text.
+
+Schema:
+{"duplicates": [{"new_episode_index": 0, "memory_id": "existing_memory_id"}]}
+
+Decision rule:
+Mark a duplicate only when the new episode and existing episode describe the same concrete real-world event or experience.
+
+Rules:
+- A duplicate should have the same main participants, same main action/outcome, and the same time window or clearly same occasion when time is available.
+- Do NOT mark duplicate merely because episodes share the same person, topic, place, project, or general theme.
+- Do NOT mark duplicate when the new episode adds a distinct action, result, decision, reason, or later update.
+- Do NOT mark duplicate when two events could both have happened.
+- Omit a new_episode_index when it is not clearly a duplicate.
+- When in doubt, keep both episodes by omitting the new_episode_index.
+
+Examples of duplicate:
+  new: "用户上周在公司会议室参加了技术分享会"
+  existing: "用户上周参加了公司会议室的技术分享会" -> duplicate
+
+Examples of NO duplicate:
+  new: "张明上周入职北京智谱"
+  existing: "张明今年辞职并换工作到北京智谱" -> keep both if they may describe different granularity or a later update
+
+  new: "用户昨天参加了机器人展会"
+  existing: "用户上周参加了机器人展会" -> keep both
+
+  new: "王芳在上海参加了机器人展会"
+  existing: "王芳目前是工业视觉算法工程师" -> keep both
 """
 
 FACT_EXTRACTION_PROMPT = """\
