@@ -10,6 +10,7 @@ from rich.text import Text
 
 from heta.cli.branding import HETA, MUTED, WARN
 from heta.config.io import CONFIG_PATH, load_config
+from heta.cli.errors import print_error
 from heta.query import QueryResult, run_wiki_query
 
 console = Console()
@@ -31,9 +32,8 @@ def query_command(
         with console.status(f"[bold {HETA}]heta query[/] [{MUTED}]reading wiki[/]", spinner="dots"):
             result = run_wiki_query(question, config, top_k=top_k)
     except Exception as exc:
-        console.print(f"[{WARN}]?[/] Query failed.")
-        console.print(f"[{MUTED}]  Reason:[/] {exc}")
-        raise typer.Exit(1) from exc
+        print_error(console, "Query failed.", exc)
+        raise typer.Exit(1) from None
 
     _show_result(result)
 

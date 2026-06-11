@@ -8,6 +8,7 @@ from rich.panel import Panel
 
 from heta.cli.branding import ERR, HETA, MUTED, OK
 from heta.config.io import load_config
+from heta.cli.errors import print_error
 from heta.mem.pipeline import remember
 
 console = Console()
@@ -22,8 +23,12 @@ def remember_command(
         console.print(f"[{ERR}]Heta is not initialised. Run `heta init` first.[/]")
         raise typer.Exit(1)
 
-    with console.status(f"[bold {HETA}]Extracting memories...[/]"):
-        result = remember(text, config)
+    try:
+        with console.status(f"[bold {HETA}]Extracting memories...[/]"):
+            result = remember(text, config)
+    except Exception as exc:
+        print_error(console, "Remember failed.", exc)
+        raise typer.Exit(1) from None
 
     console.print(
         Panel(

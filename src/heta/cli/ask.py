@@ -10,6 +10,7 @@ from rich.text import Text
 
 from heta.cli.branding import CYAN, ERR, HETA, MUTED, OK, WARN
 from heta.config.io import load_config
+from heta.cli.errors import print_error
 from heta.query.smart_query import smart_query
 
 console = Console()
@@ -32,8 +33,12 @@ def ask_command(
         console.print(f"[{ERR}]Heta is not initialised. Run `heta init` first.[/]")
         raise typer.Exit(1)
 
-    with console.status(f"[bold {HETA}]Thinking...[/]"):
-        result = smart_query(question, config, top_k=top_k)
+    try:
+        with console.status(f"[bold {HETA}]Thinking...[/]"):
+            result = smart_query(question, config, top_k=top_k)
+    except Exception as exc:
+        print_error(console, "Ask failed.", exc)
+        raise typer.Exit(1) from None
 
     if debug:
         console.print(f"\n[bold {WARN}]── DEBUG ──[/]")
