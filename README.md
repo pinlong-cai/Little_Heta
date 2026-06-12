@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/little-heta/"><img src="https://img.shields.io/badge/pypi-v0.2.0-3775A9?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI v0.2.0"></a>
+  <a href="https://pypi.org/project/little-heta/"><img src="https://img.shields.io/badge/pypi-v0.2.2-3775A9?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI v0.2.2"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-2B6CB0?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2EA44F?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://knowledgexlab.github.io/"><img src="https://img.shields.io/badge/KnowledgeXLab-Little%20Heta-111827?style=for-the-badge&logo=github&logoColor=white" alt="KnowledgeXLab"></a>
@@ -165,6 +165,20 @@ memory-backed reuse resolves repeated questions from previously distilled
 insights. The main extra cost is the first pass that creates the reusable
 insight.
 
+## Recent Capabilities
+
+- **Static insert mode**: every inserted source can be written as its own stable
+  wiki page, while dynamic insert remains available for LLM-assisted wiki
+  merging.
+- **Faster memory writes**: `heta remember --fast` stores raw memory
+  immediately, while the default high-quality mode now batches extraction,
+  deduplication, and conflict checks more efficiently.
+- **Better memory recall**: episodic memories are deduplicated, atomic facts can
+  expire conflicting older facts, and `heta recall` ranks memory layers before
+  answering.
+- **Cleaner operations**: `heta mem-show` can inspect all memory layers, and CLI
+  failures now show concise user-facing reasons instead of long tracebacks.
+
 ## Core CLI
 
 The main commands are:
@@ -179,6 +193,7 @@ The main commands are:
 - `heta clean`: remove generated wiki pages and vector DB while keeping raw files.
 - `heta vector`: turn document vector indexing on, off, or show status.
 - `heta insert-planning`: turn smart insert planning on, off, or show status.
+- `heta dynamic-insert`: turn dynamic LLM wiki merging on, off, or show status.
 - `heta mem-show`: inspect stored KB memories.
 - `heta mem-clean`: erase memory data.
 - `heta skill`: install or refresh agent skills.
@@ -195,6 +210,7 @@ Detailed command docs:
 - [clean](docs/cli/clean.md)
 - [vector](docs/cli/vector.md)
 - [insert-planning](docs/cli/insert-planning.md)
+- [dynamic-insert](docs/cli/dynamic-insert.md)
 - [mem-show](docs/cli/mem-show.md)
 - [mem-clean](docs/cli/mem-clean.md)
 - [skill](docs/cli/skill.md)
