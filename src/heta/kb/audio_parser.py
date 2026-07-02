@@ -12,8 +12,16 @@ import requests
 from openai import OpenAI
 
 from heta.config.schema import HetaConfig
-from heta.kb.agent import _chat_completion, _get_client
-from heta.providers.clients import ModelClient, build_multimodal_client
+from heta.kb.agent import _chat_completion, _get_chat_model
+from heta.providers.clients import build_multimodal_model, resolve_litellm_model_name
+from heta.providers.litellm_models import LiteLLMChatModel
+from heta.providers.model_protocols import (
+    ChatCompletionRequest,
+    ChatMessage,
+    ChatModelConfig,
+    ChatModelOptions,
+    ChatModelProtocol,
+)
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".webm", ".mp4"}
 
@@ -114,10 +122,9 @@ def _transcribe_with_openai(path: Path, config: HetaConfig) -> str:
 
 
 def _structure_transcript(*, source_path: Path, transcript: str, config: HetaConfig) -> dict[str, str]:
-    client, model = _get_client(config)
+    chat_model = _get_chat_model(config)
     response = _chat_completion(
-        client=client,
-        model=model,
+        chat_model=chat_model,
         messages=[
             {"role": "system", "content": _media_json_system_prompt()},
             {
@@ -129,7 +136,7 @@ def _structure_transcript(*, source_path: Path, transcript: str, config: HetaCon
         temperature=0.1,
         config=config,
     )
-    raw = response.choices[0].message.content or ""
+    raw = response.message.content or ""
     data = _normalize_description(_extract_json_object(raw))
     if not data["transcript"].strip():
         data["transcript"] = transcript
@@ -141,15 +148,20 @@ def _transcribe_with_qwen_omni(path: Path, config: HetaConfig) -> dict[str, str]
 
 
 def _transcribe_with_custom_audio(path: Path, config: HetaConfig) -> dict[str, str]:
-    resolved = ModelClient(
-        client=OpenAI(
-            api_key=config.llm.audio_api_key or "",
-            base_url=config.llm.audio_base_url,
-            timeout=300,
-        ),
-        model=config.llm.audio_model or "",
+    audio_model = _required(config.llm.audio_model, "audio_model")
+    chat_model = LiteLLMChatModel(
+        ChatModelConfig(
+            model_name=resolve_litellm_model_name(
+                provider=config.llm.provider,
+                model_name=audio_model,
+                api_base=config.llm.audio_base_url,
+            ),
+            api_key=_required(config.llm.audio_api_key, "audio_api_key"),
+            api_base=config.llm.audio_base_url,
+            request_timeout=300,
+        )
     )
-    return _transcribe_with_openai_compatible_multimodal(path, config, resolved=resolved)
+    return _transcribe_with_openai_compatible_multimodal(path, config, resolved=chat_model)
 
 
 def _transcribe_with_openai_compatible_multimodal(
@@ -157,9 +169,9 @@ def _transcribe_with_openai_compatible_multimodal(
     config: HetaConfig,
     *,
     extra_body: dict[str, Any] | None = None,
-    resolved: ModelClient | None = None,
+    resolved: ChatModelProtocol | None = None,
 ) -> dict[str, str]:
-    resolved = resolved or build_multimodal_client(config)
+    chat_model = resolved or build_multimodal_model(config)
     suffix = path.suffix.lower()
     content: list[dict[str, Any]] = [{"type": "text", "text": _media_prompt(path.name)}]
     if suffix == ".mp4":
@@ -178,13 +190,13 @@ def _transcribe_with_openai_compatible_multimodal(
             }
         )
 
-    response = resolved.client.chat.completions.create(
-        model=resolved.model,
-        messages=[{"role": "user", "content": content}],
-        temperature=0.1,
-        **({"extra_body": extra_body} if extra_body else {}),
+    response = chat_model.complete(
+        ChatCompletionRequest(
+            messages=[ChatMessage(role="user", content=content)],
+            options=ChatModelOptions(temperature=0.1, provider_options=extra_body),
+        )
     )
-    raw = response.choices[0].message.content or ""
+    raw = response.message.content or ""
     return _normalize_description(_extract_json_object(raw))
 
 
@@ -272,11 +284,7 @@ def _mime_type(path: Path) -> str:
 
 
 def _require_multimodal(config: HetaConfig, feature: str) -> None:
-    if not (
-        config.llm.multimodal_api_key
-        and config.llm.multimodal_model
-        and config.llm.multimodal_base_url
-    ):
+    if not (config.llm.multimodal_api_key and config.llm.multimodal_model):
         raise ValueError(
             f"{feature} requires a multimodal model. Run `heta init` and enable custom multimodal API, "
             "or skip this file."
@@ -284,11 +292,19 @@ def _require_multimodal(config: HetaConfig, feature: str) -> None:
 
 
 def _require_custom_audio(config: HetaConfig) -> None:
-    if not (config.llm.audio_api_key and config.llm.audio_model and config.llm.audio_base_url):
+    if not (config.llm.audio_api_key and config.llm.audio_model):
         raise ValueError(
             "Audio/video parsing is not enabled for custom providers because audio APIs vary by vendor. "
             "Use qwen or gemini for built-in audio support, or enable a custom audio adapter later."
         )
+    if "/" not in config.llm.audio_model and not config.llm.audio_base_url:
+        raise ValueError("Custom audio model names without a LiteLLM provider prefix require audio_base_url.")
+
+
+def _required(value: str | None, field: str) -> str:
+    if not value:
+        raise ValueError(f"Missing LLM {field} in config.")
+    return value
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:

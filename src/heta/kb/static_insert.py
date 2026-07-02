@@ -8,12 +8,16 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from openai import APIError
-
 from heta.config.schema import HetaConfig
 from heta.kb.models import FileChange, ParsedDocument
 from heta.kb.text import slugify
-from heta.providers.clients import build_chat_client, extra_body
+from heta.providers.clients import build_chat_model
+from heta.providers.model_protocols import (
+    ChatCompletionRequest,
+    ChatMessage,
+    ChatModelOptions,
+    ChatModelRequestError,
+)
 
 SUMMARY_MAX_CHARS = 12000
 SUMMARY_MAX_TOKENS = 512
@@ -49,29 +53,28 @@ def write_static_page(
 
 
 def generate_summary(*, document: ParsedDocument, config: HetaConfig) -> str:
-    resolved = build_chat_client(config, timeout=300, max_retries=2)
-    request_extra_body = extra_body(config)
+    chat_model = build_chat_model(config, timeout=300, max_retries=2)
     prompt = _summary_user_prompt(document)
     last_exc: Exception | None = None
     for attempt in range(1, SUMMARY_RETRIES + 1):
         try:
-            kwargs: dict[str, Any] = {
-                "model": resolved.model,
-                "messages": [
-                    {"role": "system", "content": SUMMARY_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.1,
-                "max_tokens": SUMMARY_MAX_TOKENS,
-            }
-            if request_extra_body is not None:
-                kwargs["extra_body"] = request_extra_body
-            response = resolved.client.chat.completions.create(**kwargs)
-            summary = _normalize_summary(response.choices[0].message.content or "")
+            response = chat_model.complete(
+                ChatCompletionRequest(
+                    messages=[
+                        ChatMessage(role="system", content=SUMMARY_PROMPT),
+                        ChatMessage(role="user", content=prompt),
+                    ],
+                    options=ChatModelOptions(
+                        temperature=0.1,
+                        max_output_tokens=SUMMARY_MAX_TOKENS,
+                    ),
+                )
+            )
+            summary = _normalize_summary(response.message.content or "")
             if summary:
                 return summary
             last_exc = RuntimeError("LLM returned an empty summary.")
-        except APIError as exc:
+        except ChatModelRequestError as exc:
             last_exc = exc
         if attempt < SUMMARY_RETRIES:
             time.sleep(min(2**attempt, 20))

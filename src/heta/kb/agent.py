@@ -11,13 +11,17 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from openai import OpenAI
-
 from heta.config.schema import HetaConfig
 from heta.kb.models import FileChange, ParsedDocument
 from heta.kb.text import slugify
 from heta.kb.wiki import detect_wiki_changes
-from heta.providers.clients import build_chat_client, extra_body
+from heta.providers.clients import build_chat_model
+from heta.providers.model_protocols import (
+    ChatCompletionRequest,
+    ChatCompletionResult,
+    ChatModelOptions,
+    ChatModelProtocol,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +161,7 @@ def run_merge_agent(
 ) -> dict[str, Any]:
     """Run a real tool-calling LLM agent against a wiki working copy."""
     before = _snapshot_pages(root_dir)
-    client, model = _get_client(config)
+    chat_model = _get_chat_model(config)
     stats = AgentStats(task_id=task_id, max_steps=max_steps, max_seconds=max_seconds)
     messages: list[dict[str, Any]] = [{"role": "user", "content": _initial_message(documents, root_dir)}]
     written_paths: set[str] = set()
@@ -165,14 +169,13 @@ def run_merge_agent(
 
     while stats.should_continue():
         response = _chat_completion(
-            client=client,
-            model=model,
+            chat_model=chat_model,
             messages=[{"role": "system", "content": _system_prompt()}, *messages],
             tools=AGENT_TOOLS,
             temperature=temperature,
             config=config,
         )
-        message = response.choices[0].message
+        message = response.message
         tool_calls = list(message.tool_calls or [])
 
         if not tool_calls:
@@ -216,8 +219,7 @@ def run_merge_agent(
         }
     )
     final = _chat_completion(
-        client=client,
-        model=model,
+        chat_model=chat_model,
         messages=[{"role": "system", "content": _system_prompt()}, *messages],
         tools=None,
         temperature=temperature,
@@ -226,7 +228,7 @@ def run_merge_agent(
     stats.record_completion(final.usage)
     changes = detect_wiki_changes(root_dir, before)
     return {
-        "final_response": final.choices[0].message.content or "completed",
+        "final_response": final.message.content or "completed",
         "written_paths": sorted(written_paths),
         "read_paths": sorted(read_paths),
         "usage": stats.finish("stopped at limit"),
@@ -240,38 +242,28 @@ _LLM_TIMEOUT_SECONDS = 900
 _LLM_MAX_RETRIES = 3
 
 
-def _get_client(config: HetaConfig) -> tuple[OpenAI, str]:
+def _get_chat_model(config: HetaConfig) -> ChatModelProtocol:
     # API keys are intentionally read only from ~/.heta/heta.yaml, which is
     # created by `heta init`. Model choice stays fixed to fast defaults here.
-    resolved = build_chat_client(config, timeout=_LLM_TIMEOUT_SECONDS, max_retries=_LLM_MAX_RETRIES)
-    return resolved.client, resolved.model
-
-
-def _extra_body(config: HetaConfig) -> dict[str, Any] | None:
-    return extra_body(config)
+    return build_chat_model(config, timeout=_LLM_TIMEOUT_SECONDS, max_retries=_LLM_MAX_RETRIES)
 
 
 def _chat_completion(
     *,
-    client: OpenAI,
-    model: str,
+    chat_model: ChatModelProtocol,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
     temperature: float,
     config: HetaConfig,
-) -> Any:
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-    }
-    if tools is not None:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = "auto"
-    extra_body = _extra_body(config)
-    if extra_body is not None:
-        kwargs["extra_body"] = extra_body
-    return client.chat.completions.create(**kwargs)
+) -> ChatCompletionResult:
+    return chat_model.complete(
+        ChatCompletionRequest(
+            messages=messages,
+            tools=tools,
+            tool_choice="auto" if tools is not None else None,
+            options=ChatModelOptions(temperature=temperature),
+        )
+    )
 
 
 def _system_prompt() -> str:

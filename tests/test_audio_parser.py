@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -109,24 +110,20 @@ def test_chatgpt_audio_transcribes_then_structures_transcript(monkeypatch, tmp_p
 
         audio = FakeOpenAIClient.audio
 
-    chat_client = object()
+    chat_model = object()
     monkeypatch.setattr("heta.kb.audio_parser.OpenAI", FakeOpenAIFactory)
-    monkeypatch.setattr("heta.kb.audio_parser._get_client", lambda config: (chat_client, "gpt-chat"))
+    monkeypatch.setattr("heta.kb.audio_parser._get_chat_model", lambda config: chat_model)
 
     def fake_chat_completion(**kwargs):
         seen.update(kwargs)
         return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=(
-                            '{"summary":"A meeting.","transcript":"Speaker: hello.",'
-                            '"key_points_metadata":"Language: English.",'
-                            '"interpretation_keywords":"meeting, test"}'
-                        )
-                    )
+            message=SimpleNamespace(
+                content=(
+                    '{"summary":"A meeting.","transcript":"Speaker: hello.",'
+                    '"key_points_metadata":"Language: English.",'
+                    '"interpretation_keywords":"meeting, test"}'
                 )
-            ]
+            )
         )
 
     monkeypatch.setattr("heta.kb.audio_parser._chat_completion", fake_chat_completion)
@@ -137,8 +134,7 @@ def test_chatgpt_audio_transcribes_then_structures_transcript(monkeypatch, tmp_p
     assert seen["openai_kwargs"]["api_key"] == "sk-test"
     assert seen["transcription"]["model"] == "gpt-4o-transcribe"
     assert seen["transcription"]["response_format"] == "text"
-    assert seen["client"] is chat_client
-    assert seen["model"] == "gpt-chat"
+    assert seen["chat_model"] is chat_model
     assert "Speaker: hello." in seen["messages"][1]["content"]
 
 
@@ -203,36 +199,32 @@ def test_custom_audio_uses_audio_adapter(monkeypatch, tmp_path: Path) -> None:
     audio.write_bytes(b"mp3 bytes")
     seen: dict[str, object] = {}
 
-    class FakeChatCompletions:
+    class FakeLiteLLM:
         @staticmethod
-        def create(**kwargs):
+        def completion(**kwargs):
             seen["request"] = kwargs
-            return SimpleNamespace(
-                choices=[
-                    SimpleNamespace(
-                        message=SimpleNamespace(
-                            content=(
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": (
                                 '{"summary":"A meeting.","transcript":"Speaker: hello.",'
                                 '"key_points_metadata":"Language: English.",'
                                 '"interpretation_keywords":"meeting, test"}'
-                            )
-                        )
-                    )
+                            ),
+                        }
+                    }
                 ]
-            )
+            }
 
-    class FakeOpenAI:
-        def __init__(self, **kwargs):
-            seen["client_kwargs"] = kwargs
-            self.chat = SimpleNamespace(completions=FakeChatCompletions())
-
-    monkeypatch.setattr("heta.kb.audio_parser.OpenAI", FakeOpenAI)
+    monkeypatch.setitem(sys.modules, "litellm", FakeLiteLLM)
 
     result = transcribe_media(source_path=audio, config=_custom_with_audio_config())
 
     assert result["summary"] == "A meeting."
-    assert seen["client_kwargs"]["api_key"] == "sk-audio"
-    assert seen["client_kwargs"]["base_url"] == "http://audio.local/v1"
-    assert seen["request"]["model"] == "audio-model"
+    assert seen["request"]["api_key"] == "sk-audio"
+    assert seen["request"]["api_base"] == "http://audio.local/v1"
+    assert seen["request"]["model"] == "openai/audio-model"
     content = seen["request"]["messages"][0]["content"]
     assert content[1]["type"] == "input_audio"

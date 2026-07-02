@@ -149,6 +149,44 @@ dynamic_insert:
         raise AssertionError("missing custom embedding fields should fail")
 
 
+def test_custom_config_accepts_prefixed_litellm_models_without_base_urls(tmp_path: Path) -> None:
+    path = tmp_path / ".heta" / "heta.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """
+version: 1
+llm:
+  provider: custom
+  api_key: legacy-key
+  chat_api_key: anthropic-key
+  chat_model: anthropic/claude-sonnet-4-5
+  embedding_api_key: openai-key
+  embedding_model: openai/text-embedding-3-small
+mineru:
+  enable: false
+  provider:
+  api_key:
+  endpoint:
+vector_index:
+  enable: true
+insert_planning:
+  enable: true
+dynamic_insert:
+  enable: false
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_config(path)
+
+    assert loaded is not None
+    assert loaded.llm.provider == "custom"
+    assert loaded.llm.chat_model == "anthropic/claude-sonnet-4-5"
+    assert loaded.llm.chat_base_url is None
+    assert loaded.llm.embedding_model == "openai/text-embedding-3-small"
+    assert loaded.llm.embedding_base_url is None
+
+
 def test_load_missing_config_returns_none(tmp_path: Path) -> None:
     assert load_config(tmp_path / "missing.yaml") is None
 

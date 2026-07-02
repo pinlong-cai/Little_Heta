@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from heta.config.schema import InsertPlanningConfig, HetaConfig, LLMConfig, MinerUConfig, VectorIndexConfig
 from heta.mem.recall import LayerEvidence, _rank, _select_ranked_evidence
+from heta.providers.model_protocols import ChatCompletionRequest, ChatCompletionResult, ChatMessage
 
 
 def _config() -> HetaConfig:
@@ -18,17 +17,24 @@ def _config() -> HetaConfig:
     )
 
 
-class FakeChatCompletions:
+class FakeChatModel:
     def __init__(self):
         self.calls = []
 
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
+    @property
+    def model_name(self) -> str:
+        return "mock-chat"
+
+    def complete(self, request: ChatCompletionRequest) -> ChatCompletionResult:
+        self.calls.append(request)
         if len(self.calls) == 1:
             content = '{"ranking": ["atomic_fact", "episode", "raw", "kb_insight"], "reason": "facts first"}'
         else:
             content = '{"answer": "张明在北京智谱工作。", "sufficient": true}'
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+        return ChatCompletionResult(
+            message=ChatMessage(role="assistant", content=content),
+            model_name=self.model_name,
+        )
 
 
 def _evidence() -> list[LayerEvidence]:
@@ -59,15 +65,12 @@ def test_select_ranked_evidence_falls_back_when_ranking_has_no_useful_layers() -
 
 
 def test_rank_generates_answer_from_top_two_ranked_layers_only() -> None:
-    chat = FakeChatCompletions()
-    client = SimpleNamespace(chat=SimpleNamespace(completions=chat))
+    chat = FakeChatModel()
 
     ranking, answer, reason, sufficient = _rank(
         query="张明在哪里工作？",
         evidence=_evidence(),
-        client=client,
-        model="mock-chat",
-        config=_config(),
+        chat_model=chat,
     )
 
     assert ranking == ["atomic_fact", "episode", "raw", "kb_insight"]
@@ -76,7 +79,7 @@ def test_rank_generates_answer_from_top_two_ranked_layers_only() -> None:
     assert sufficient is True
     assert len(chat.calls) == 2
 
-    answer_user_msg = chat.calls[1]["messages"][1]["content"]
+    answer_user_msg = chat.calls[1].messages[1].content
     assert "## atomic_fact" in answer_user_msg
     assert "张明 就职于 北京智谱" in answer_user_msg
     assert "## episode" in answer_user_msg

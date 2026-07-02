@@ -7,12 +7,17 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
-
 from heta.config.schema import HetaConfig
-from heta.mem.client import EMBEDDING_DIM, extra_body
 from heta.mem.l1_search import search_episodes
 from heta.mem.prompts import EPISODE_DEDUP_PROMPT
+from heta.providers.model_protocols import (
+    ChatCompletionRequest,
+    ChatMessage,
+    ChatModelOptions,
+    ChatModelProtocol,
+    EmbeddingModelProtocol,
+    EmbeddingRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +33,8 @@ class EpisodeDedupResult:
 def detect_episode_duplicates_batch(
     conn: Any,
     new_episode_summaries: list[str],
-    llm_client: OpenAI,
-    llm_model: str,
-    emb_client: OpenAI,
-    emb_model: str,
+    chat_model: ChatModelProtocol,
+    embedding_model: EmbeddingModelProtocol,
     config: HetaConfig,
     top_k: int = 5,
     min_candidate_score: float = MIN_EPISODE_DUP_CANDIDATE_SCORE,
@@ -40,7 +43,7 @@ def detect_episode_duplicates_batch(
     if not new_episode_summaries:
         return []
 
-    embeddings = _embed_texts(emb_client, emb_model, new_episode_summaries)
+    embeddings = _embed_texts(embedding_model, new_episode_summaries)
     candidates_by_index: dict[int, list[dict]] = {}
 
     for index, embedding in enumerate(embeddings):
@@ -52,8 +55,7 @@ def detect_episode_duplicates_batch(
     duplicates: dict[int, str] = {}
     if candidates_by_index:
         duplicates = _judge_batch(
-            llm_client,
-            llm_model,
+            chat_model,
             new_episode_summaries,
             candidates_by_index,
             config,
@@ -68,37 +70,28 @@ def detect_episode_duplicates_batch(
     ]
 
 
-def _embed_texts(client: OpenAI, model: str, texts: list[str]) -> list[list[float]]:
-    response = client.embeddings.create(
-        model=model,
-        input=texts,
-        dimensions=EMBEDDING_DIM,
-    )
-    return [item.embedding for item in response.data]
+def _embed_texts(embedding_model: EmbeddingModelProtocol, texts: list[str]) -> list[list[float]]:
+    response = embedding_model.embed(EmbeddingRequest(texts=texts))
+    return response.vectors
 
 
 def _judge_batch(
-    client: OpenAI,
-    model: str,
+    chat_model: ChatModelProtocol,
     new_episode_summaries: list[str],
     candidates_by_index: dict[int, list[dict]],
     config: HetaConfig,
 ) -> dict[int, str]:
     user_msg = _batch_user_message(new_episode_summaries, candidates_by_index)
-    kwargs: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": EPISODE_DEDUP_PROMPT},
-            {"role": "user", "content": user_msg},
-        ],
-        "temperature": 0.0,
-    }
-    body = extra_body(config)
-    if body:
-        kwargs["extra_body"] = body
-
-    response = client.chat.completions.create(**kwargs)
-    raw = (response.choices[0].message.content or "").strip()
+    response = chat_model.complete(
+        ChatCompletionRequest(
+            messages=[
+                ChatMessage(role="system", content=EPISODE_DEDUP_PROMPT),
+                ChatMessage(role="user", content=user_msg),
+            ],
+            options=ChatModelOptions(temperature=0.0),
+        )
+    )
+    raw = (response.message.content or "").strip()
     return _parse_judge_response(raw)
 
 

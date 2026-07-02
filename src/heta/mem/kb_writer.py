@@ -10,13 +10,14 @@ from pathlib import Path
 
 from heta.config.schema import HetaConfig
 from heta.mem import meta_store
-from heta.mem.client import build_client, build_embedding_client, extra_body
+from heta.mem.client import build_chat_model, build_embedding_model
 from heta.mem.db import get_connection, init_db
 from heta.mem.embedder import embed_text
 from heta.mem.kb_store import insert_insight_embedding, insert_kb_insight, search_kb_insights
 from heta.mem.models import KBInsight, MemoryMeta
 from heta.mem.paths import db_path, ensure_mem_dir
 from heta.mem.prompts import INSIGHT_DEDUP_PROMPT
+from heta.providers.model_protocols import ChatCompletionRequest, ChatMessage, ChatModelOptions, ChatModelProtocol
 from heta.query.models import QueryInsight, QuerySource
 
 logger = logging.getLogger(__name__)
@@ -42,8 +43,8 @@ def remember_kb_insights(
     conn = get_connection(db_path(), with_vec=True)
     init_db(conn)
 
-    llm_client, llm_model = build_client(config)
-    emb_client, emb_model = build_embedding_client(config)
+    chat_model = build_chat_model(config)
+    embedding_model = build_embedding_model(config)
     now = int(time.time())
 
     # Build a path → QuerySource map so insights can inherit wiki_id / heading
@@ -56,10 +57,10 @@ def remember_kb_insights(
         if not text:
             continue
 
-        emb = embed_text(emb_client, emb_model, text)
+        emb = embed_text(embedding_model, text)
         similar = search_kb_insights(conn, emb, top_k=_DEDUP_TOP_K)
         if similar and similar[0]["score"] >= _DEDUP_SIMILARITY_THRESHOLD:
-            if _is_duplicate(llm_client, llm_model, text, similar, config):
+            if _is_duplicate(chat_model, text, similar):
                 logger.debug("skip duplicate insight: %.80s", text)
                 continue
 
@@ -98,30 +99,26 @@ def remember_kb_insights(
 
 
 def _is_duplicate(
-    client,
-    model: str,
+    chat_model: ChatModelProtocol,
     insight_text: str,
     similar: list[dict],
-    config: HetaConfig,
 ) -> bool:
     """Ask the LLM whether the new insight is fully covered by the similar set."""
     existing_block = "\n".join(
         f"[{i + 1}] {s['insight']}" for i, s in enumerate(similar)
     )
     user_msg = f"NEW insight:\n{insight_text}\n\nEXISTING similar insights:\n{existing_block}"
-    kwargs: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": INSIGHT_DEDUP_PROMPT},
-            {"role": "user", "content": user_msg},
-        ],
-        "temperature": 0.0,
-    }
-    body = extra_body(config)
-    if body:
-        kwargs["extra_body"] = body
     try:
-        raw = (client.chat.completions.create(**kwargs).choices[0].message.content or "").strip()
+        response = chat_model.complete(
+            ChatCompletionRequest(
+                messages=[
+                    ChatMessage(role="system", content=INSIGHT_DEDUP_PROMPT),
+                    ChatMessage(role="user", content=user_msg),
+                ],
+                options=ChatModelOptions(temperature=0.0),
+            )
+        )
+        raw = (response.message.content or "").strip()
         data = _parse_json(raw)
         return bool(data.get("duplicate", False))
     except Exception:

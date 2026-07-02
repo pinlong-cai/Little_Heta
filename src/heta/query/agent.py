@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from heta.config.schema import HetaConfig
-from heta.kb.agent import AgentStats, _chat_completion, _get_client
+from heta.kb.agent import AgentStats, _chat_completion, _get_chat_model
 from heta.query.models import QueryInsight, QueryResult, QuerySource, VectorMatch
 from heta.query.tools import (
     format_vector_matches,
@@ -99,7 +99,7 @@ def run_query_agent(
     max_seconds: int = 180,
     temperature: float = 0.2,
 ) -> QueryResult:
-    client, model = _get_client(config)
+    chat_model = _get_chat_model(config)
     stats = AgentStats(task_id="query", max_steps=max_steps, max_seconds=max_seconds)
     index_text = read_index(base_dir)
     initial_matches = search_vector(question, config, top_k=top_k, base_dir=base_dir)
@@ -120,14 +120,13 @@ def run_query_agent(
 
     while stats.should_continue():
         response = _chat_completion(
-            client=client,
-            model=model,
+            chat_model=chat_model,
             messages=[{"role": "system", "content": _system_prompt(config.vector_index.enable)}, *messages],
             tools=tools,
             temperature=temperature,
             config=config,
         )
-        message = response.choices[0].message
+        message = response.message
         tool_calls = list(message.tool_calls or [])
 
         if not tool_calls:
@@ -189,8 +188,7 @@ def run_query_agent(
         }
     )
     final = _chat_completion(
-        client=client,
-        model=model,
+        chat_model=chat_model,
         messages=[{"role": "system", "content": _system_prompt(config.vector_index.enable)}, *messages],
         tools=None,
         temperature=temperature,
@@ -198,7 +196,7 @@ def run_query_agent(
     )
     stats.record_completion(final.usage)
     final_answer = _parse_final_answer(
-        text=final.choices[0].message.content or "",
+        text=final.message.content or "",
         read_paths=read_paths,
         vector_matches=vector_matches,
         base_dir=base_dir,
@@ -231,6 +229,20 @@ Reading rules:
   insight source_paths.
 - Follow useful [[Wiki Links]] by reading the linked pages when the index gives their paths.
 {vector_rule}
+- For technical-document questions where a diagram, schematic, figure,
+  illustrated part, wiring page, structure, connection, location, installation,
+  removal, or troubleshooting evidence may help, perform both retrieval passes
+  before the final answer: first use the normal matches already provided, then
+  call search_vector once with the core topic plus visual terms such as
+  "图 图示 结构图 线路图 图解 插图 简图 image figure diagram schematic". Use and cite
+  visual pages only when they materially support the answer.
+- After a visual/diagram search, inspect the returned visual pages. If one or
+  more visual pages clearly match the user's core subject (for example, their
+  title or heading names the same system, component, task, or document object)
+  and the answer mentions diagrams, schematics, wiring, structure, connections,
+  figure identifiers, or information from those visual pages, include all such
+  clearly matching visual pages in used_sources. Do not cite visual pages that
+  only share generic words but describe a different subject.
 - Stop reading when the context is enough.
 
 Output protocol — distill, then answer:

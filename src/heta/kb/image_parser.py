@@ -10,7 +10,7 @@ from typing import Any
 
 from heta.config.schema import HetaConfig
 from heta.kb.agent import _chat_completion
-from heta.providers.clients import build_multimodal_client
+from heta.providers.clients import build_multimodal_model
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -39,10 +39,9 @@ def parse_image_markdown(source_path: Path, archived_path: Path, config: HetaCon
 
 def describe_image(*, source_path: Path, config: HetaConfig) -> dict[str, str]:
     _require_multimodal(config, "Image parsing")
-    resolved = build_multimodal_client(config)
+    chat_model = build_multimodal_model(config)
     response = _chat_completion(
-        client=resolved.client,
-        model=resolved.model,
+        chat_model=chat_model,
         messages=[
             {"role": "system", "content": _image_system_prompt()},
             {
@@ -62,7 +61,7 @@ def describe_image(*, source_path: Path, config: HetaConfig) -> dict[str, str]:
         temperature=0.1,
         config=config,
     )
-    raw = response.choices[0].message.content or ""
+    raw = response.message.content or ""
     return _normalize_description(_extract_json_object(raw))
 
 
@@ -133,7 +132,6 @@ def _require_multimodal(config: HetaConfig, feature: str) -> None:
     if not (
         config.llm.multimodal_api_key
         and config.llm.multimodal_model
-        and config.llm.multimodal_base_url
     ):
         raise ValueError(
             f"{feature} requires a multimodal model. Run `heta init` and enable custom multimodal API, "

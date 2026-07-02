@@ -1,7 +1,6 @@
-from types import SimpleNamespace
-
 from heta.config.schema import InsertPlanningConfig, HetaConfig, LLMConfig, MinerUConfig, VectorIndexConfig
 from heta.mem.recall import LayerEvidence
+from heta.providers.model_protocols import ChatCompletionResult, ChatMessage
 import heta.query.smart_query as smart_query_module
 from heta.query.smart_query import _parse_text_tool_calls, smart_query
 
@@ -17,9 +16,9 @@ def _config() -> HetaConfig:
 
 
 def _response(content: str):
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None))],
-        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+    return ChatCompletionResult(
+        message=ChatMessage(role="assistant", content=content),
+        model_name="fake-model",
     )
 
 
@@ -46,19 +45,19 @@ def test_smart_query_executes_text_tool_call_instead_of_returning_it(monkeypatch
     )
     seen_messages = []
 
-    def fake_chat(client, model, messages, *, tools, config):
+    def fake_chat(chat_model, messages, *, tools):
         seen_messages.append(messages)
         return next(responses)
 
-    def fake_build_client(config):
-        return object(), "fake-model"
+    def fake_build_chat_model(config):
+        return object()
 
     def fake_retrieve_evidence(query, config, top_k):
         assert query == "工业智能中枢是什么"
         return [LayerEvidence(layer="raw", items=[{"score": 0.9, "text_content": "工业智能中枢是工业数据与智能能力平台。"}])]
 
     monkeypatch.setattr(smart_query_module, "_chat", fake_chat)
-    monkeypatch.setattr(smart_query_module, "build_client", fake_build_client)
+    monkeypatch.setattr(smart_query_module, "build_chat_model", fake_build_chat_model)
     monkeypatch.setattr(smart_query_module, "retrieve_evidence", fake_retrieve_evidence)
 
     result = smart_query("工业智能中枢是什么", _config())

@@ -7,18 +7,15 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from openai import OpenAI
-
 from heta.config.schema import HetaConfig
-from heta.mem.client import extra_body
 from heta.mem.prompts import EPISODE_EXTRACTION_PROMPT
+from heta.providers.model_protocols import ChatCompletionRequest, ChatMessage, ChatModelOptions, ChatModelProtocol
 
 logger = logging.getLogger(__name__)
 
 
 def extract_episodes(
-    client: OpenAI,
-    model: str,
+    chat_model: ChatModelProtocol,
     text: str,
     config: HetaConfig,
     session_ts: int | None = None,
@@ -27,16 +24,16 @@ def extract_episodes(
     anchor_date = _fmt_date(session_ts)
     user_content = f"Anchor date: {anchor_date}\n\nText:\n{text}"
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": EPISODE_EXTRACTION_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        temperature=0.2,
-        **({"extra_body": extra_body(config)} if extra_body(config) else {}),
+    response = chat_model.complete(
+        ChatCompletionRequest(
+            messages=[
+                ChatMessage(role="system", content=EPISODE_EXTRACTION_PROMPT),
+                ChatMessage(role="user", content=user_content),
+            ],
+            options=ChatModelOptions(temperature=0.2),
+        )
     )
-    raw = response.choices[0].message.content or ""
+    raw = response.message.content or ""
     return _parse_episodes(raw)
 
 

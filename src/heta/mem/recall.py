@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass, field
 
 from heta.config.schema import HetaConfig
-from heta.mem.client import build_client, build_embedding_client, extra_body
+from heta.mem.client import build_chat_model, build_embedding_model
 from heta.mem.db import get_connection, init_db
 from heta.mem.embedder import embed_text
 from heta.mem.kb_store import search_kb_insights
@@ -16,6 +16,7 @@ from heta.mem.l1_search import search_episodes
 from heta.mem.l2_store import search_similar_facts
 from heta.mem.paths import db_path, ensure_mem_dir
 from heta.mem.prompts import RECALL_ANSWER_PROMPT, RECALL_RANKING_PROMPT
+from heta.providers.model_protocols import ChatCompletionRequest, ChatMessage, ChatModelOptions, ChatModelProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,8 @@ def _open_conn_and_embed(query: str, config: HetaConfig):
     ensure_mem_dir()
     conn = get_connection(db_path(), with_vec=True)
     init_db(conn)
-    emb_client, emb_model = build_embedding_client(config)
-    embedding = embed_text(emb_client, emb_model, query)
+    embedding_model = build_embedding_model(config)
+    embedding = embed_text(embedding_model, query)
     return conn, embedding
 
 
@@ -63,7 +64,7 @@ def retrieve_evidence(query: str, config: HetaConfig, top_k: int = 5) -> list[La
 
 def recall(query: str, config: HetaConfig, top_k: int = 10) -> RecallResult:
     conn, query_embedding = _open_conn_and_embed(query, config)
-    llm_client, llm_model = build_client(config)
+    chat_model = build_chat_model(config)
 
     l0_hits = search_turns(conn, query, top_k=top_k)
     l1_hits = search_episodes(conn, query_embedding, top_k=top_k)
@@ -81,9 +82,7 @@ def recall(query: str, config: HetaConfig, top_k: int = 10) -> RecallResult:
     ranking, answer, reason, sufficient = _rank(
         query=query,
         evidence=evidence,
-        client=llm_client,
-        model=llm_model,
-        config=config,
+        chat_model=chat_model,
     )
 
     return RecallResult(
@@ -99,21 +98,16 @@ def recall(query: str, config: HetaConfig, top_k: int = 10) -> RecallResult:
 def _rank(
     query: str,
     evidence: list[LayerEvidence],
-    client,
-    model: str,
-    config: HetaConfig,
+    chat_model: ChatModelProtocol,
 ) -> tuple[list[str], str, str, bool]:
     """Two-phase: rank layers first, then generate a strictly grounded answer."""
     evidence_text = format_evidence(evidence)
-    body = extra_body(config)
 
     # Phase A: rank layers (no answer generation)
     ranking, reason = _rank_layers(
         query=query,
         evidence_text=evidence_text,
-        client=client,
-        model=model,
-        extra=body,
+        chat_model=chat_model,
     )
 
     # Phase B: generate grounded answer from the top-ranked useful layers.
@@ -121,9 +115,7 @@ def _rank(
     answer, sufficient = _generate_grounded_answer(
         query=query,
         evidence_text=format_evidence(answer_evidence),
-        client=client,
-        model=model,
-        extra=body,
+        chat_model=chat_model,
     )
 
     return ranking, answer, reason, sufficient
@@ -159,22 +151,19 @@ def _select_ranked_evidence(
 def _rank_layers(
     query: str,
     evidence_text: str,
-    client,
-    model: str,
-    extra: dict | None,
+    chat_model: ChatModelProtocol,
 ) -> tuple[list[str], str]:
-    kwargs: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": RECALL_RANKING_PROMPT},
-            {"role": "user", "content": f"Question:\n{query}\n\nEvidence:\n{evidence_text}"},
-        ],
-        "temperature": 0.1,
-    }
-    if extra:
-        kwargs["extra_body"] = extra
     try:
-        raw = (client.chat.completions.create(**kwargs).choices[0].message.content or "").strip()
+        response = chat_model.complete(
+            ChatCompletionRequest(
+                messages=[
+                    ChatMessage(role="system", content=RECALL_RANKING_PROMPT),
+                    ChatMessage(role="user", content=f"Question:\n{query}\n\nEvidence:\n{evidence_text}"),
+                ],
+                options=ChatModelOptions(temperature=0.1),
+            )
+        )
+        raw = (response.message.content or "").strip()
         data = _parse_json(raw)
         return data.get("ranking", []), data.get("reason", "")
     except Exception:
@@ -185,22 +174,19 @@ def _rank_layers(
 def _generate_grounded_answer(
     query: str,
     evidence_text: str,
-    client,
-    model: str,
-    extra: dict | None,
+    chat_model: ChatModelProtocol,
 ) -> tuple[str, bool]:
-    kwargs: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": RECALL_ANSWER_PROMPT},
-            {"role": "user", "content": f"Question:\n{query}\n\nEvidence:\n{evidence_text}"},
-        ],
-        "temperature": 0.2,
-    }
-    if extra:
-        kwargs["extra_body"] = extra
     try:
-        raw = (client.chat.completions.create(**kwargs).choices[0].message.content or "").strip()
+        response = chat_model.complete(
+            ChatCompletionRequest(
+                messages=[
+                    ChatMessage(role="system", content=RECALL_ANSWER_PROMPT),
+                    ChatMessage(role="user", content=f"Question:\n{query}\n\nEvidence:\n{evidence_text}"),
+                ],
+                options=ChatModelOptions(temperature=0.2),
+            )
+        )
+        raw = (response.message.content or "").strip()
         data = _parse_json(raw)
         answer = data.get("answer", "")
         sufficient = bool(data.get("sufficient", False))

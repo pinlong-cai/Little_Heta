@@ -29,7 +29,7 @@ heta insert ./docs
 heta ask "What does my knowledge base say about this?"
 ```
 
-`heta init` 需要你准备一个 LLM API key。PDF 和 Office 解析可选接入 MinerU：https://mineru.net/apiManage/docs。
+`heta init` 需要你准备一个 LLM API key，可选择 Qwen、ChatGPT、Gemini 或 custom。custom 支持 LiteLLM-native 模型名（如 `openai/gpt-5.4-nano`，可不填 base URL），也支持裸模型名加 OpenAI-compatible `/v1` base URL。PDF 和 Office 解析可选接入 MinerU：https://mineru.net/apiManage/docs。
 
 ## Core Concepts
 

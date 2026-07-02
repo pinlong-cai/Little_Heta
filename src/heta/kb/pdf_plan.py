@@ -14,7 +14,7 @@ from pypdf import PdfReader, PdfWriter
 
 from heta.config.schema import HetaConfig
 from heta.kb import paths
-from heta.kb.agent import _chat_completion, _get_client
+from heta.kb.agent import _chat_completion, _get_chat_model
 from heta.kb.text import slugify
 
 PDF_PAGE_THRESHOLD = 80
@@ -172,10 +172,9 @@ def plan_pdf_split(
 
 
 def run_pdf_planning_agent(profile: PdfProfile, *, config: HetaConfig) -> dict[str, Any]:
-    client, model = _get_client(config)
+    chat_model = _get_chat_model(config)
     response = _chat_completion(
-        client=client,
-        model=model,
+        chat_model=chat_model,
         messages=[
             {"role": "system", "content": _planning_system_prompt()},
             {"role": "user", "content": _planning_user_prompt(profile)},
@@ -184,7 +183,7 @@ def run_pdf_planning_agent(profile: PdfProfile, *, config: HetaConfig) -> dict[s
         temperature=0.1,
         config=config,
     )
-    content = response.choices[0].message.content or ""
+    content = response.message.content or ""
     return _extract_json_object(content)
 
 

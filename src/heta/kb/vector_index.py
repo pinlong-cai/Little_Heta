@@ -15,7 +15,8 @@ import sqlite_vec
 from heta.config.schema import HetaConfig
 from heta.kb import paths
 from heta.kb.models import FileChange
-from heta.providers.clients import EMBEDDING_DIM, build_embedding_client
+from heta.providers.clients import EMBEDDING_DIM, build_embedding_model
+from heta.providers.model_protocols import EmbeddingRequest
 
 EMBEDDING_BATCH_SIZE = 10
 MAX_CHUNK_CHARS = 4096
@@ -433,16 +434,18 @@ def _rrf_fuse(
 
 
 def _embed_texts(texts: list[str], config: HetaConfig) -> list[list[float]]:
-    resolved = build_embedding_client(config)
+    embedding_model = build_embedding_model(config)
     embeddings: list[list[float]] = []
     for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
         batch = texts[start : start + EMBEDDING_BATCH_SIZE]
-        response = resolved.client.embeddings.create(
-            model=resolved.model,
-            input=batch,
-            dimensions=EMBEDDING_DIM,
-        )
-        embeddings.extend(item.embedding for item in response.data)
+        response = embedding_model.embed(EmbeddingRequest(texts=batch))
+        for vector in response.vectors:
+            if len(vector) != EMBEDDING_DIM:
+                raise ValueError(
+                    f"Embedding model {embedding_model.model_name} returned {len(vector)} dimensions; "
+                    f"Little Heta requires {EMBEDDING_DIM}."
+                )
+        embeddings.extend(response.vectors)
     return embeddings
 
 

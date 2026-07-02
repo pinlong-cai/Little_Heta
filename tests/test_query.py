@@ -5,7 +5,7 @@ import pytest
 from heta.config.schema import InsertPlanningConfig, HetaConfig, LLMConfig, MinerUConfig, VectorIndexConfig
 from heta.kb import paths
 from heta.kb.text import frontmatter_page
-from heta.query.agent import _parse_final_answer, _vector_match_map
+from heta.query.agent import _parse_final_answer, _system_prompt, _vector_match_map
 from heta.query.models import QueryResult, QuerySource, VectorMatch
 from heta.query.pipeline import run_wiki_query
 from heta.query.tools import format_vector_matches, read_page, read_raw, source_from_page_path
@@ -164,3 +164,11 @@ def test_format_vector_matches_includes_chunk_identity() -> None:
     assert "wiki_id: 1" in text
     assert "chunk_id: 1:abc" in text
     assert "heading: Content > API" in text
+
+
+def test_system_prompt_requests_visual_second_pass_when_vector_enabled() -> None:
+    prompt = _system_prompt(vector_enabled=True)
+
+    assert "perform both retrieval passes" in prompt
+    assert "call search_vector once with the core topic plus visual terms" in prompt
+    assert "线路图" in prompt

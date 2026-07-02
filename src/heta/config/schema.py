@@ -120,13 +120,21 @@ class LLMConfig:
                 for field in (
                     "chat_api_key",
                     "chat_model",
-                    "chat_base_url",
                     "embedding_api_key",
                     "embedding_model",
-                    "embedding_base_url",
                 )
                 if values[field] is None
             ]
+            chat_model = values["chat_model"]
+            embedding_model = values["embedding_model"]
+            if chat_model is not None and "/" not in chat_model and values["chat_base_url"] is None:
+                missing.append("chat_base_url")
+            if (
+                embedding_model is not None
+                and "/" not in embedding_model
+                and values["embedding_base_url"] is None
+            ):
+                missing.append("embedding_base_url")
             if missing:
                 raise ValueError(f"Custom LLM config requires: {', '.join(missing)}.")
 

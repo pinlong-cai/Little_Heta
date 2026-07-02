@@ -20,7 +20,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from heta.config.io import load_config
-from heta.mem.client import build_client, extra_body
 from heta.mem.recall import recall
 
 # ── QA definitions ───────────────────────────────────────────────────────────

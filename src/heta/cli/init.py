@@ -234,10 +234,10 @@ def _ask_optional_text(prompt: str) -> str | None:
 
 def _show_custom_provider_note() -> None:
     console.print()
-    console.print(f"[{WARN}]?[/] Custom provider expects OpenAI-compatible APIs.")
-    console.print(f"  [{MUTED}]Chat:[/]       /chat/completions style text generation")
-    console.print(f"  [{MUTED}]Embedding:[/]  /embeddings style vectors with 1024 dimensions")
-    console.print(f"  [{MUTED}]Multimodal:[/] optional OpenAI-style image content blocks")
+    console.print(f"[{WARN}]?[/] Custom provider supports LiteLLM model names and OpenAI-compatible APIs.")
+    console.print(f"  [{MUTED}]LiteLLM:[/]    use provider/model names such as anthropic/claude-sonnet-4-5")
+    console.print(f"  [{MUTED}]Local API:[/]  use a bare model name plus a /v1-compatible base URL")
+    console.print(f"  [{MUTED}]Embedding:[/]  vectors are stored with 1024 dimensions")
 
 
 def _configure_custom_capability(label: str, *, required: bool) -> dict[str, str | None]:
@@ -249,7 +249,18 @@ def _configure_custom_capability(label: str, *, required: bool) -> dict[str, str
     while True:
         api_key = _ask_required_secret(f"  {label} API key")
         model = _ask_required_text(f"  {label} model")
-        base_url = _ask_required_text(f"  {label} base URL")
+        base_url = _ask_optional_text(
+            f"  {label} base URL (required for bare OpenAI-compatible model names)"
+        )
+        if _custom_base_url_required(model) and base_url is None:
+            console.print(
+                f"[{WARN}]?[/] {label} base URL is required for bare model names. "
+                "Use a LiteLLM provider prefix to leave it empty."
+            )
+            continue
+        if base_url is None:
+            console.print(f"[{OK}]✓[/] {label} configured as LiteLLM-native model")
+            return {"api_key": api_key, "model": model, "base_url": None}
         with console.status(f"Checking custom {label.lower()} API", spinner="dots"):
             ok = validate_llm("custom", api_key, base_url)
         if ok:
@@ -258,6 +269,10 @@ def _configure_custom_capability(label: str, *, required: bool) -> dict[str, str
         console.print(f"[{WARN}]?[/] Could not connect to custom {label.lower()} API.")
         if not Confirm.ask("  Retry?", default=True):
             raise typer.Exit(1)
+
+
+def _custom_base_url_required(model: str) -> bool:
+    return "/" not in model
 
 
 def _ask_required_secret(prompt: str) -> str:

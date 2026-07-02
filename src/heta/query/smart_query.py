@@ -12,9 +12,10 @@ from types import SimpleNamespace
 from typing import Any, Literal
 
 from heta.config.schema import HetaConfig
-from heta.mem.client import build_client, extra_body
+from heta.mem.client import build_chat_model
 from heta.mem.kb_writer import remember_kb_insights
 from heta.mem.recall import LayerEvidence, format_evidence, retrieve_evidence
+from heta.providers.model_protocols import ChatCompletionRequest, ChatMessage, ChatModelOptions, ChatModelProtocol
 from heta.query.models import QueryResult
 
 logger = logging.getLogger(__name__)
@@ -138,13 +139,13 @@ def smart_query(
 ) -> SmartQueryResult:
     """Outer agent loop: lets an LLM decide when to recall memory vs. query KB."""
     state = _State()
-    client, model = build_client(config)
+    chat_model = build_chat_model(config)
     messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
 
     for _ in range(MAX_OUTER_STEPS):
-        resp = _chat(client, model, messages, tools=OUTER_TOOLS, config=config)
+        resp = _chat(chat_model, messages, tools=OUTER_TOOLS)
         _record_outer_usage(state, resp)
-        msg = resp.choices[0].message
+        msg = resp.message
         tool_calls = list(msg.tool_calls or [])
 
         if not tool_calls:
@@ -173,9 +174,9 @@ def smart_query(
     messages.append(
         {"role": "user", "content": "Step limit reached. Answer with the evidence already gathered, or say you don't know."}
     )
-    final = _chat(client, model, messages, tools=None, config=config)
+    final = _chat(chat_model, messages, tools=None)
     _record_outer_usage(state, final)
-    return _build_result(state, answer=final.choices[0].message.content or "")
+    return _build_result(state, answer=final.message.content or "")
 
 
 def _build_result(state: _State, *, answer: str) -> SmartQueryResult:
@@ -295,18 +296,15 @@ def _exec_query_kb(question: str, config: HetaConfig, top_k: int, base_dir: Path
     return kb_result.answer
 
 
-def _chat(client, model: str, messages: list[dict[str, Any]], *, tools, config: HetaConfig):
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": [{"role": "system", "content": OUTER_SYSTEM_PROMPT}, *messages],
-        "temperature": 0.2,
-    }
-    if tools:
-        kwargs["tools"] = tools
-    body = extra_body(config)
-    if body:
-        kwargs["extra_body"] = body
-    return client.chat.completions.create(**kwargs)
+def _chat(chat_model: ChatModelProtocol, messages: list[dict[str, Any]], *, tools):
+    return chat_model.complete(
+        ChatCompletionRequest(
+            messages=[ChatMessage(role="system", content=OUTER_SYSTEM_PROMPT), *messages],
+            tools=tools,
+            tool_choice="auto" if tools else None,
+            options=ChatModelOptions(temperature=0.2),
+        )
+    )
 
 
 def _record_outer_usage(state: _State, response: Any) -> None:

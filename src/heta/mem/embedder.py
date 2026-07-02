@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from openai import OpenAI
-
 from heta.mem.client import EMBEDDING_DIM
+from heta.providers.model_protocols import EmbeddingModelProtocol, EmbeddingRequest
 
 
-def embed_text(client: OpenAI, model: str, text: str) -> list[float]:
-    response = client.embeddings.create(
-        model=model,
-        input=[text],
-        dimensions=EMBEDDING_DIM,
-    )
-    return response.data[0].embedding
+def embed_text(embedding_model: EmbeddingModelProtocol, text: str) -> list[float]:
+    response = embedding_model.embed(EmbeddingRequest(texts=[text]))
+    vector = response.vectors[0]
+    if len(vector) != EMBEDDING_DIM:
+        raise ValueError(
+            f"Embedding model {embedding_model.model_name} returned {len(vector)} dimensions; "
+            f"Little Heta requires {EMBEDDING_DIM}."
+        )
+    return vector
 
 
 def fact_text(subject: str, predicate: str, object_: str) -> str:

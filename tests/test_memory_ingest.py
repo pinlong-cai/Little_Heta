@@ -82,7 +82,8 @@ def _patch_pipeline(
     if conflicts is None:
         conflicts = []
 
-    mock_client = MagicMock()
+    mock_chat_model = MagicMock()
+    mock_embedding_model = MagicMock()
 
     def _open_conn(path, *, with_vec=False):
         c = get_connection(tmp_db, with_vec=True)
@@ -94,11 +95,10 @@ def _patch_pipeline(
         patch("heta.mem.pipeline.db_path", return_value=tmp_db),
         patch("heta.mem.pipeline.get_connection", side_effect=_open_conn),
         patch("heta.mem.pipeline.init_db"),
-        patch("heta.mem.pipeline.build_client", return_value=(mock_client, "mock-llm")),
-        patch("heta.mem.pipeline.build_embedding_client", return_value=(mock_client, "mock-emb")),
+        patch("heta.mem.pipeline.build_chat_model", return_value=mock_chat_model),
+        patch("heta.mem.pipeline.build_embedding_model", return_value=mock_embedding_model),
         patch("heta.mem.pipeline.extract_episodes", return_value=episodes),
         patch("heta.mem.pipeline.extract_facts", return_value=facts),
-        patch("heta.mem.pipeline.embed_text", return_value=FAKE_EMB),
         patch(
             "heta.mem.pipeline.detect_episode_duplicates_batch",
             side_effect=lambda new_episode_summaries, **kwargs: [
@@ -179,7 +179,8 @@ def test_remember_returns_correct_counts(config, tmp_db) -> None:
 def test_remember_extracts_episodes_and_facts_concurrently(config, tmp_db) -> None:
     episodes_started = threading.Event()
     facts_started = threading.Event()
-    mock_client = MagicMock()
+    mock_chat_model = MagicMock()
+    mock_embedding_model = MagicMock()
 
     def _open_conn(path, *, with_vec=False):
         c = get_connection(tmp_db, with_vec=True)
@@ -201,8 +202,8 @@ def test_remember_extracts_episodes_and_facts_concurrently(config, tmp_db) -> No
         patch("heta.mem.pipeline.db_path", return_value=tmp_db),
         patch("heta.mem.pipeline.get_connection", side_effect=_open_conn),
         patch("heta.mem.pipeline.init_db"),
-        patch("heta.mem.pipeline.build_client", return_value=(mock_client, "mock-llm")),
-        patch("heta.mem.pipeline.build_embedding_client", return_value=(mock_client, "mock-emb")),
+        patch("heta.mem.pipeline.build_chat_model", return_value=mock_chat_model),
+        patch("heta.mem.pipeline.build_embedding_model", return_value=mock_embedding_model),
         patch("heta.mem.pipeline.extract_episodes", side_effect=fake_extract_episodes),
         patch("heta.mem.pipeline.extract_facts", side_effect=fake_extract_facts),
         patch("heta.mem.pipeline.detect_episode_duplicates_batch", return_value=[]),
@@ -546,4 +547,3 @@ def test_remember_fast_mode_only_stores_l0(config, tmp_db) -> None:
     assert l1_count == 0
     assert l2_count == 0
     assert "extract" not in (result.timings or {})
-

@@ -1,5 +1,6 @@
 from unittest.mock import Mock, patch
 
+from heta.cli.init import _custom_base_url_required
 from heta.providers.llm import validate_llm
 from heta.providers.mineru import validate_mineru_cloud, validate_mineru_local
 
@@ -24,6 +25,12 @@ def test_validate_custom_llm_uses_base_url_models(get: Mock) -> None:
 
     assert validate_llm("custom", "sk-test", "http://llm.local/v1") is True
     assert get.call_args.args[0] == "http://llm.local/v1/models"
+
+
+def test_custom_init_requires_base_url_only_for_bare_model_names() -> None:
+    assert _custom_base_url_required("local-chat") is True
+    assert _custom_base_url_required("anthropic/claude-sonnet-4-5") is False
+    assert _custom_base_url_required("openai/text-embedding-3-small") is False
 
 
 @patch("heta.providers.mineru.requests.post")

@@ -7,13 +7,17 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
-
 from heta.config.schema import HetaConfig
-from heta.mem.client import EMBEDDING_DIM, extra_body
-from heta.mem.embedder import embed_text
 from heta.mem.l2_store import search_similar_facts
 from heta.mem.prompts import BATCH_CONFLICT_JUDGE_PROMPT, CONFLICT_JUDGE_PROMPT
+from heta.providers.model_protocols import (
+    ChatCompletionRequest,
+    ChatMessage,
+    ChatModelOptions,
+    ChatModelProtocol,
+    EmbeddingModelProtocol,
+    EmbeddingRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +34,8 @@ class ConflictResult:
 def detect_conflicts(
     conn: Any,
     new_fact_text: str,
-    llm_client: OpenAI,
-    llm_model: str,
-    emb_client: OpenAI,
-    emb_model: str,
+    chat_model: ChatModelProtocol,
+    embedding_model: EmbeddingModelProtocol,
     config: HetaConfig,
     top_k: int = 10,
     session_id: str | None = None,
@@ -42,10 +44,8 @@ def detect_conflicts(
     result = detect_conflicts_batch(
         conn=conn,
         new_fact_texts=[new_fact_text],
-        llm_client=llm_client,
-        llm_model=llm_model,
-        emb_client=emb_client,
-        emb_model=emb_model,
+        chat_model=chat_model,
+        embedding_model=embedding_model,
         config=config,
         top_k=top_k,
         session_id=session_id,
@@ -56,10 +56,8 @@ def detect_conflicts(
 def detect_conflicts_batch(
     conn: Any,
     new_fact_texts: list[str],
-    llm_client: OpenAI,
-    llm_model: str,
-    emb_client: OpenAI,
-    emb_model: str,
+    chat_model: ChatModelProtocol,
+    embedding_model: EmbeddingModelProtocol,
     config: HetaConfig,
     top_k: int = 10,
     session_id: str | None = None,
@@ -69,7 +67,7 @@ def detect_conflicts_batch(
     if not new_fact_texts:
         return []
 
-    embeddings = _embed_texts(emb_client, emb_model, new_fact_texts)
+    embeddings = _embed_texts(embedding_model, new_fact_texts)
     filtered_candidates: dict[int, list[dict]] = {}
 
     for index, embedding in enumerate(embeddings):
@@ -101,8 +99,7 @@ def detect_conflicts_batch(
     deprecations: dict[int, list[str]] = {}
     if judge_candidates:
         deprecations = _judge_batch(
-            llm_client,
-            llm_model,
+            chat_model,
             new_fact_texts,
             judge_candidates,
             config,
@@ -145,18 +142,13 @@ def _candidate_score(candidate: dict) -> float:
     return 1.0 / (1.0 + max(distance, 0.0))
 
 
-def _embed_texts(client: OpenAI, model: str, texts: list[str]) -> list[list[float]]:
-    response = client.embeddings.create(
-        model=model,
-        input=texts,
-        dimensions=EMBEDDING_DIM,
-    )
-    return [item.embedding for item in response.data]
+def _embed_texts(embedding_model: EmbeddingModelProtocol, texts: list[str]) -> list[list[float]]:
+    response = embedding_model.embed(EmbeddingRequest(texts=texts))
+    return response.vectors
 
 
 def _judge(
-    client: OpenAI,
-    model: str,
+    chat_model: ChatModelProtocol,
     new_fact_text: str,
     candidates: list[dict],
     config: HetaConfig,
@@ -167,45 +159,36 @@ def _judge(
     )
     user_msg = f'New fact: "{new_fact_text}"\n\nExisting facts:\n{candidate_lines}'
 
-    kwargs: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": CONFLICT_JUDGE_PROMPT},
-            {"role": "user", "content": user_msg},
-        ],
-        "temperature": 0.0,
-    }
-    body = extra_body(config)
-    if body:
-        kwargs["extra_body"] = body
-
-    response = client.chat.completions.create(**kwargs)
-    raw = (response.choices[0].message.content or "").strip()
+    response = chat_model.complete(
+        ChatCompletionRequest(
+            messages=[
+                ChatMessage(role="system", content=CONFLICT_JUDGE_PROMPT),
+                ChatMessage(role="user", content=user_msg),
+            ],
+            options=ChatModelOptions(temperature=0.0),
+        )
+    )
+    raw = (response.message.content or "").strip()
     return _parse_judge_response(raw)
 
 
 def _judge_batch(
-    client: OpenAI,
-    model: str,
+    chat_model: ChatModelProtocol,
     new_fact_texts: list[str],
     candidates_by_index: dict[int, list[dict]],
     config: HetaConfig,
 ) -> dict[int, list[str]]:
     user_msg = _batch_user_message(new_fact_texts, candidates_by_index)
-    kwargs: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": BATCH_CONFLICT_JUDGE_PROMPT},
-            {"role": "user", "content": user_msg},
-        ],
-        "temperature": 0.0,
-    }
-    body = extra_body(config)
-    if body:
-        kwargs["extra_body"] = body
-
-    response = client.chat.completions.create(**kwargs)
-    raw = (response.choices[0].message.content or "").strip()
+    response = chat_model.complete(
+        ChatCompletionRequest(
+            messages=[
+                ChatMessage(role="system", content=BATCH_CONFLICT_JUDGE_PROMPT),
+                ChatMessage(role="user", content=user_msg),
+            ],
+            options=ChatModelOptions(temperature=0.0),
+        )
+    )
+    raw = (response.message.content or "").strip()
     return _parse_batch_judge_response(raw)
 
 

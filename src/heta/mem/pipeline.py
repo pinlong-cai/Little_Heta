@@ -10,15 +10,16 @@ from dataclasses import dataclass
 
 from heta.config.schema import HetaConfig
 from heta.mem import l0_store, l1_store, l2_store, meta_store, session_store
-from heta.mem.client import build_client, build_embedding_client
+from heta.mem.client import build_chat_model, build_embedding_model
 from heta.mem.db import get_connection, init_db
-from heta.mem.embedder import embed_text, fact_text
+from heta.mem.embedder import fact_text
 from heta.mem.l1_dedup import detect_episode_duplicates_batch
 from heta.mem.l1_extractor import extract_episodes, resolve_when_ts
 from heta.mem.l2_conflict import detect_conflicts_batch
 from heta.mem.l2_extractor import extract_facts
 from heta.mem.models import L0Turn, L1Episodic, L2Semantic, MemoryMeta, Session
 from heta.mem.paths import db_path, ensure_mem_dir
+from heta.providers.model_protocols import ChatModelProtocol, EmbeddingModelProtocol
 
 
 @dataclass
@@ -34,10 +35,8 @@ class RememberResult:
 def _detect_episode_duplicates(
     path,
     summaries,
-    llm_client,
-    llm_model,
-    emb_client,
-    emb_model,
+    chat_model: ChatModelProtocol,
+    embedding_model: EmbeddingModelProtocol,
     config,
 ):
     conn = get_connection(path, with_vec=True)
@@ -46,10 +45,8 @@ def _detect_episode_duplicates(
         return detect_episode_duplicates_batch(
             conn=conn,
             new_episode_summaries=summaries,
-            llm_client=llm_client,
-            llm_model=llm_model,
-            emb_client=emb_client,
-            emb_model=emb_model,
+            chat_model=chat_model,
+            embedding_model=embedding_model,
             config=config,
         )
     finally:
@@ -59,10 +56,8 @@ def _detect_episode_duplicates(
 def _detect_fact_conflicts(
     path,
     fact_texts,
-    llm_client,
-    llm_model,
-    emb_client,
-    emb_model,
+    chat_model: ChatModelProtocol,
+    embedding_model: EmbeddingModelProtocol,
     config,
     session_id,
 ):
@@ -72,10 +67,8 @@ def _detect_fact_conflicts(
         return detect_conflicts_batch(
             conn=conn,
             new_fact_texts=fact_texts,
-            llm_client=llm_client,
-            llm_model=llm_model,
-            emb_client=emb_client,
-            emb_model=emb_model,
+            chat_model=chat_model,
+            embedding_model=embedding_model,
             config=config,
             session_id=session_id,
         )
@@ -134,17 +127,17 @@ def remember(
             timings=timings,
         )
 
-    llm_client, llm_model = build_client(config)
-    emb_client, emb_model = build_embedding_client(config)
+    chat_model = build_chat_model(config)
+    embedding_model = build_embedding_model(config)
 
     # --- extract ---
     t_stage = time.perf_counter()
     with ThreadPoolExecutor(max_workers=2) as executor:
         episodes_future = executor.submit(
-            extract_episodes, llm_client, llm_model, text, config, now
+            extract_episodes, chat_model, text, config, now
         )
         facts_future = executor.submit(
-            extract_facts, llm_client, llm_model, text, config, now
+            extract_facts, chat_model, text, config, now
         )
         raw_episodes = episodes_future.result()
         raw_facts = facts_future.result()
@@ -186,20 +179,16 @@ def remember(
             _detect_episode_duplicates,
             db_path(),
             [item[9] for item in prepared_episodes],
-            llm_client,
-            llm_model,
-            emb_client,
-            emb_model,
+            chat_model,
+            embedding_model,
             config,
         ) if prepared_episodes else None
         conflict_future = executor.submit(
             _detect_fact_conflicts,
             db_path(),
             [item[5] for item in prepared_facts],
-            llm_client,
-            llm_model,
-            emb_client,
-            emb_model,
+            chat_model,
+            embedding_model,
             config,
             session_id,
         ) if prepared_facts else None
